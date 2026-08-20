@@ -1,0 +1,25 @@
+{
+  "github_api_url": "https://api.github.com/",
+  "enable_local": true,
+  "enable_clone": false,
+  "workspace_root": "~/code",
+  "allowed_paths": [],
+  "request_timeout_seconds": 30,
+  "max_retries": 3,
+  "max_response_tokens": 8000,
+  "github_concurrency": 5,
+  "cache_ttl_seconds": 21600,
+  "metrics_enabled": true,
+  "metrics_port": 9090,
+  "databricks_max_rows": 1000,
+  "databricks": {
+    "dev": {
+      "host": "https://dev.cloud.databricks.com",
+      "warehouse_id": "your-dev-warehouse-id"
+    },
+    "prod": {
+      "host": "https://prod.cloud.databricks.com",
+      "warehouse_id": "your-prod-warehouse-id"
+    }
+  }
+}

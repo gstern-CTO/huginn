@@ -1,0 +1,19 @@
+# Build output
+/bin/
+/dist/
+/huginn
+
+# Test and coverage artefacts
+*.test
+*.out
+coverage.html
+
+# Local configuration; never commit credentials
+config.json
+.env
+.env.*
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
