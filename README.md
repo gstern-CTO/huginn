@@ -171,6 +171,134 @@ rejected before it leaves the process if it is anything other than a single
 
 ---
 
+## Docker
+
+### How a containerised MCP server actually works
+
+Huginn speaks MCP over stdio. There is no port to connect to and no daemon to
+attach to: the **client starts the server process and owns its stdin and stdout
+for the life of a session**. A `docker compose up -d` service would start, read
+EOF on stdin, and exit.
+
+So the model is one container per session, started by whatever is driving the
+server. `docker-compose.yml` exists to describe the image, mounts, environment
+and cache volume in one place, so your MCP client and your local testing spawn
+identical containers. Both services sit behind Compose profiles, which means a
+bare `docker compose up` deliberately starts nothing rather than appearing to
+work.
+
+```bash
+make docker-build     # build the image (~59MB)
+make docker-smoke     # drive a real handshake through it and list the tools
+make run-local        # one interactive session on stdio
+```
+
+`make run-local` gives you a live MCP session with the current directory
+mounted read-only. Paste JSON-RPC requests one per line:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"cli","version":"1"}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+```
+
+Point it at another checkout with `HUGINN_WORKSPACE=/path/to/code make run-local`.
+
+### Wiring it into an MCP client
+
+Give the client a command that starts a container per session:
+
+```json
+{
+  "mcpServers": {
+    "huginn": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "--mount", "type=bind,src=/home/you/code,dst=/workspace,ro",
+        "--mount", "type=volume,src=huginn-cache,dst=/var/cache/huginn",
+        "--read-only", "--tmpfs", "/tmp",
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+        "--init",
+        "-e", "GITHUB_TOKEN",
+        "-e", "ENABLE_LOCAL=true",
+        "huginn:local"
+      ]
+    }
+  }
+}
+```
+
+`-i` is essential and `-t` must be absent: a TTY would corrupt the protocol
+stream. `-e GITHUB_TOKEN` without a value passes the variable through from the
+client's environment rather than baking it into the config file.
+
+### Why bother containerising a single static binary
+
+- **It ships the dependencies the tools shell out to.** The image carries
+  ripgrep 14, so `local_search_code` works on a machine that has never
+  installed it. On the host used to develop this, `rg` was not present at all
+  and that tool returned `DEPENDENCY_MISSING`; in the container it works.
+- **The kernel enforces read-only, not just the path guard.** The workspace is
+  a `ro` bind mount, the root filesystem is read-only, all capabilities are
+  dropped, and the process runs as uid 65532. The path guard refusing to
+  escape the workspace and the kernel refusing to let it are two independent
+  layers; a bug in the first no longer means a modified working tree.
+- **Reproducible across machines and CI.** One image, one Go toolchain
+  version, one ripgrep version, whatever the developer has installed locally.
+- **The cache survives.** A named volume is mounted at the cache directory, so
+  the disk tier still spans sessions even though every session gets a fresh
+  container. Without it, containerising would silently undo weakness #7.
+- **A blast radius.** A research tool reads whatever it is pointed at; a
+  container bounds that to one mounted directory.
+
+### Language servers in the container
+
+The default image has no language server, so `lsp_navigate` uses its ripgrep
+symbol fallback and reports the install command — the designed graceful path,
+not a failure. For exact Go navigation:
+
+```bash
+make docker-build-go      # larger image: gopls plus the Go toolchain
+HUGINN_TARGET=runtime-go make run-local
+```
+
+gopls needs the Go toolchain beside it to resolve a module, which is why that
+variant keeps the full Go base image instead of Alpine.
+
+### Metrics from a containerised session
+
+Metrics are off by default in session containers. Containers that live for one
+session are poor scrape targets, and publishing a fixed port would stop two
+sessions running side by side. When you want to watch one long-lived session:
+
+```bash
+make run-observed         # metrics on 127.0.0.1:9090/metrics
+```
+
+For ephemeral sessions, scraping is the wrong shape; aggregate elsewhere or
+accept per-session visibility.
+
+### Configuration
+
+Compose reads a local `.env` (gitignored):
+
+```bash
+GITHUB_TOKEN=ghp_...
+HUGINN_WORKSPACE=/home/you/code
+HUGINN_TARGET=runtime          # or runtime-go
+METRICS_PORT=9090
+```
+
+Secrets are never baked into the image — they are passed in at run time.
+
+```bash
+make docker-cache-clean   # drop the persistent response cache
+make docker-clean         # also remove the image
+```
+
+---
+
 ## Observability
 
 Prometheus metrics are served on `127.0.0.1:9090/metrics`, with `/healthz`
@@ -242,10 +370,14 @@ internal/tools/      the eleven MCP tools and server wiring
 ## Development
 
 ```bash
-make test        # unit tests, offline
-make lint        # gofmt + go vet
-make build       # ./bin/huginn
-make integration # live GitHub tests; needs GITHUB_TOKEN
+make help          # list every target
+make test          # unit tests, offline
+make lint          # gofmt + go vet
+make build         # ./bin/huginn
+make smoke         # MCP handshake against the local binary
+make integration   # live GitHub tests; needs GITHUB_TOKEN
+make docker-build  # container image
+make run-local     # containerised MCP session on stdio
 ```
 
 Unit tests are hermetic — no network, no dependency on ripgrep or a language

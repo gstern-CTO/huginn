@@ -1,0 +1,20 @@
+# Everything the build does not need. Keeping the context small also keeps
+# credentials and local state out of the image.
+.git
+.github
+bin/
+dist/
+docs/
+*.md
+!go.mod
+.env
+.env.*
+config.json
+coverage.out
+coverage.html
+*.test
+Dockerfile
+docker-compose.yml
+.dockerignore
+.idea/
+.vscode/

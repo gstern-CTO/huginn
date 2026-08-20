@@ -1,0 +1,118 @@
+# Huginn speaks MCP over stdio. There is no daemon to connect to: the MCP
+# client starts the server and owns its stdin and stdout for the life of a
+# session. A detached `up -d` service would therefore read EOF on stdin and
+# exit immediately.
+#
+# So this file is not a "start it and leave it running" definition. It is the
+# single place where the image, mounts, environment and cache volume are
+# described, so that your MCP client and your local testing spawn an identical
+# container. Both services sit behind profiles, so a bare `docker compose up`
+# deliberately starts nothing.
+#
+#   docker compose run --rm -T huginn          # one MCP session on stdio
+#   docker compose --profile observe up        # one session, metrics published
+#
+# See the Docker section of README.md for the MCP client configuration.
+
+x-huginn-env: &huginn-env
+  # Credentials come from your shell or a local .env file, never from the
+  # image. .env is gitignored.
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com/}
+
+  ENABLE_LOCAL: ${ENABLE_LOCAL:-true}
+  WORKSPACE_ROOT: /workspace
+  CACHE_DIR: /var/cache/huginn
+  CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-21600}
+  MAX_RESPONSE_TOKENS: ${MAX_RESPONSE_TOKENS:-8000}
+  GITHUB_CONCURRENCY: ${GITHUB_CONCURRENCY:-5}
+  LARGE_FILE_BYTES: ${LARGE_FILE_BYTES:-1048576}
+
+  # Off by default: session containers are too short-lived to scrape, and a
+  # fixed published port would stop two sessions running side by side.
+  METRICS_ENABLED: ${METRICS_ENABLED:-false}
+
+  DATABRICKS_DEV_HOST: ${DATABRICKS_DEV_HOST:-}
+  DATABRICKS_DEV_TOKEN: ${DATABRICKS_DEV_TOKEN:-}
+  DATABRICKS_DEV_WAREHOUSE_ID: ${DATABRICKS_DEV_WAREHOUSE_ID:-}
+  DATABRICKS_PROD_HOST: ${DATABRICKS_PROD_HOST:-}
+  DATABRICKS_PROD_TOKEN: ${DATABRICKS_PROD_TOKEN:-}
+  DATABRICKS_PROD_WAREHOUSE_ID: ${DATABRICKS_PROD_WAREHOUSE_ID:-}
+
+x-huginn-base: &huginn-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+    # Switch to runtime-go for a real Go language server instead of the
+    # ripgrep symbol fallback.
+    target: ${HUGINN_TARGET:-runtime}
+  image: huginn:${HUGINN_TAG:-local}
+
+  # MCP is a conversation over stdin/stdout. Keep stdin open and never
+  # allocate a TTY: terminal line discipline would corrupt the frames.
+  stdin_open: true
+  tty: false
+
+  # The LSP manager spawns language server children. Without an init process
+  # reaping them, PID 1 accumulates zombies for the life of the session.
+  init: true
+
+  volumes:
+    # The workspace is mounted read-only. The path guard already refuses to
+    # write and refuses to leave the root, but having the kernel enforce it
+    # too means a bug in that logic still cannot modify your code.
+    - type: bind
+      source: ${HUGINN_WORKSPACE:-.}
+      target: /workspace
+      read_only: true
+
+    # The disk cache tier only pays off if it outlives the container. Each
+    # session gets a fresh container, so without this named volume every
+    # session would start cold and re-fetch the same trees and files —
+    # exactly the problem the disk tier exists to solve.
+    - huginn-cache:/var/cache/huginn
+
+  # The server reads code and calls two HTTP APIs. It needs no privilege
+  # beyond that, so it is given none.
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+    # Language servers insist on a writable cache directory.
+    - /home/huginn/.cache:size=256m,uid=65532,gid=65532
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+  # A runaway ripgrep or language server must not take the host down with it.
+  mem_limit: ${HUGINN_MEM_LIMIT:-2g}
+  pids_limit: 512
+
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # One MCP session. Several may run at once — different clients, different
+  # workspaces — because nothing here binds a host port.
+  huginn:
+    <<: *huginn-base
+    profiles: ["mcp"]
+    environment: *huginn-env
+
+  # One session with the metrics endpoint published, for watching a long-lived
+  # session in Prometheus or Grafana. Run a single instance of this.
+  huginn-observed:
+    <<: *huginn-base
+    profiles: ["observe"]
+    environment:
+      <<: *huginn-env
+      METRICS_ENABLED: "true"
+    ports:
+      - "127.0.0.1:${METRICS_PORT:-9090}:9090"
+
+volumes:
+  huginn-cache:
+    name: ${HUGINN_CACHE_VOLUME:-huginn-cache}
