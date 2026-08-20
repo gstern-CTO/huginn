@@ -350,6 +350,9 @@ Each item corresponds to a numbered entry in [`docs/WEAKNESSES.md`](docs/WEAKNES
 
 ## Layout
 
+Diagrams of the purpose, the data flow and the request lifecycle are in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ```
 cmd/huginn/          entry point: config, wiring, stdio serve
 internal/protocol/   response envelope, structured errors, token budget
