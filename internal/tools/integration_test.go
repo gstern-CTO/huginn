@@ -165,6 +165,12 @@ func TestIntegrationErrorsAreStructured(t *testing.T) {
 }
 
 // Requires a language server on PATH; skipped otherwise.
+//
+// This drives all four operations over one server, in sequence. That sequence
+// is the point: a language server started with the first request's context is
+// killed the moment that request returns, so every later call inherits a dead
+// client and silently degrades to the ripgrep fallback. Asserting usedFallback
+// is false on the *later* calls is what catches it.
 func TestIntegrationLSPNavigation(t *testing.T) {
 	srv := newIntegrationServer(t)
 	if !srv.runner.Available("gopls") {
@@ -173,16 +179,33 @@ func TestIntegrationLSPNavigation(t *testing.T) {
 
 	root := srv.guard.PrimaryRoot()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/probe\n\ngo 1.22\n"), 0o644))
-	source := "package probe\n\ntype Widget struct{}\n\nfunc (w Widget) Name() string { return \"w\" }\n\nfunc use() string { return Widget{}.Name() }\n"
+	source := "package probe\n\n" +
+		"// Widget is documented, and the doc comment names it first.\n" +
+		"type Widget struct{}\n\n" +
+		"func (w Widget) Name() string { return \"w\" }\n\n" +
+		"func use() string { return Widget{}.Name() }\n"
 	require.NoError(t, os.WriteFile(filepath.Join(root, "probe.go"), []byte(source), 0o644))
 
-	env := callLive(t, srv, "lsp_navigate", map[string]any{
-		"operation": "documentSymbol", "path": "probe.go",
-	})
-	require.Equal(t, protocol.StatusHasResults, env.Status, "%+v", env.Error)
+	steps := []struct {
+		name string
+		args map[string]any
+	}{
+		{"documentSymbol", map[string]any{"operation": "documentSymbol", "path": "probe.go"}},
+		{"definition", map[string]any{"operation": "definition", "path": "probe.go", "symbol": "Widget"}},
+		{"references", map[string]any{"operation": "references", "path": "probe.go", "symbol": "Widget"}},
+		{"hover", map[string]any{"operation": "hover", "path": "probe.go", "symbol": "Widget"}},
+	}
 
-	data := env.Data.(map[string]any)
-	require.False(t, data["usedFallback"].(bool), "gopls is installed, so the fallback must not be used")
+	for i, step := range steps {
+		env := callLive(t, srv, "lsp_navigate", step.args)
+		require.Equal(t, protocol.StatusHasResults, env.Status, "%s: %+v", step.name, env.Error)
+
+		data := env.Data.(map[string]any)
+		require.False(t, data["usedFallback"].(bool),
+			"%s (call %d) fell back to ripgrep: the pooled language server did not survive the previous request",
+			step.name, i+1)
+		require.Equal(t, "gopls", data["server"], step.name)
+	}
 }
 
 func TestIntegrationDatabricksQuery(t *testing.T) {

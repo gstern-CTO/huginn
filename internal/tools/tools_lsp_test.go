@@ -116,3 +116,52 @@ func TestLocateSymbolFindsFirstWordBoundaryOccurrence(t *testing.T) {
 	_, _, ok = locateSymbol(path, "NoSuchSymbol")
 	require.False(t, ok)
 }
+
+// A Go doc comment conventionally opens with the name of the thing it
+// documents, so the first raw textual occurrence of a symbol is usually inside
+// its own comment. Sending a language server a position inside a comment gets
+// "no identifier found" back, which previously made symbol-based navigation
+// fail for essentially every documented declaration.
+func TestLocateSymbolSkipsDocComments(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/decl.go"
+	source := "package demo\n" +
+		"\n" +
+		"// NewPathGuard resolves the workspace root.\n" +
+		"// NewPathGuard is mentioned twice in this comment.\n" +
+		"func NewPathGuard(root string) error { return nil }\n"
+	require.NoError(t, writeFile(path, source))
+
+	line, col, ok := locateSymbol(path, "NewPathGuard")
+	require.True(t, ok)
+	require.Equal(t, 5, line, "must land on the declaration, not the doc comment")
+	require.Equal(t, 6, col, "column must point at the identifier itself")
+}
+
+func TestLocateSymbolSkipsBlockCommentsAndStrings(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/decl.go"
+	source := "package demo\n" +
+		"\n" +
+		"/* Widget appears here in a block comment */\n" +
+		"func other() string { return \"Widget in a string\" }\n" +
+		"\n" +
+		"type Widget struct{}\n"
+	require.NoError(t, writeFile(path, source))
+
+	line, _, ok := locateSymbol(path, "Widget")
+	require.True(t, ok)
+	require.Equal(t, 6, line, "a comment and a string literal must both be skipped")
+}
+
+// A symbol that genuinely only appears in prose should still be located rather
+// than reported as absent.
+func TestLocateSymbolFallsBackToCommentOnlyMatch(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/notes.go"
+	require.NoError(t, writeFile(path, "package demo\n\n// TODO: rename LegacyThing one day.\n"))
+
+	line, _, ok := locateSymbol(path, "LegacyThing")
+	require.True(t, ok)
+	require.Equal(t, 3, line)
+}

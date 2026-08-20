@@ -373,3 +373,26 @@ func TestMCPServerAssembles(t *testing.T) {
 func writeFile(path, contents string) error {
 	return os.WriteFile(path, []byte(contents), 0o644)
 }
+
+// When the language server cannot answer and the ripgrep fallback cannot run
+// either, the response must be an error. Reporting that as an empty result
+// would have the agent conclude the symbol has no references, which is a
+// confidently wrong answer rather than a missing one.
+func TestLSPDoubleFailureIsAnErrorNotAnEmptyResult(t *testing.T) {
+	srv, root := newTestServer(t, true)
+	if srv.runner.Available("rg") {
+		t.Skip("ripgrep is installed, so the fallback can run")
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "notes.txt"), []byte("Anything appears here\n"), 0o644))
+
+	// A .txt file has no configured language server, forcing the fallback.
+	env := call(t, srv, "lsp_navigate", map[string]any{
+		"operation": "definition", "path": "notes.txt", "symbol": "Anything",
+	})
+
+	require.Equal(t, protocol.StatusError, env.Status,
+		"a double failure must not be reported as an empty result")
+	require.Equal(t, protocol.CodeDependencyMiss, env.Error.Code)
+	require.Contains(t, env.Error.Details, "fallbackError")
+	require.NotEmpty(t, env.Error.Hint)
+}

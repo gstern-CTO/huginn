@@ -174,3 +174,52 @@ func TestParseMinifyMode(t *testing.T) {
 	require.Equal(t, protocol.CodeInvalidInput, err.Code)
 	require.NotEmpty(t, err.Hint)
 }
+
+// MaskNonCode must not change the length of the text: callers rely on the
+// masked copy having identical offsets, lines and columns to the original.
+func TestMaskNonCodePreservesLengthAndPositions(t *testing.T) {
+	src := "package demo\n\n// Widget is documented here.\nfunc use() string { return \"Widget\" }\n\ntype Widget struct{}\n"
+
+	masked := MaskNonCode(src, "demo.go")
+
+	require.Equal(t, len(src), len(masked), "masking must preserve length")
+	require.Equal(t, strings.Count(src, "\n"), strings.Count(masked, "\n"), "newlines must survive")
+
+	lines := strings.Split(masked, "\n")
+	require.NotContains(t, lines[2], "Widget", "the doc comment must be masked")
+	require.NotContains(t, lines[3], "Widget", "the string literal must be masked")
+	require.Contains(t, lines[3], "func use() string", "surrounding code must survive")
+	require.Contains(t, lines[5], "type Widget struct{}", "the declaration must survive")
+
+	// The column of the surviving declaration is unchanged.
+	require.Equal(t, strings.Index(src, "type Widget"), strings.Index(masked, "type Widget"))
+}
+
+func TestMaskNonCodeHandlesRawStringsAndBlockComments(t *testing.T) {
+	src := "package demo\n\n/* Target in a block */\nvar s = `Target in a raw string`\nvar Target = 1\n"
+
+	masked := MaskNonCode(src, "demo.go")
+	require.Equal(t, len(src), len(masked))
+
+	lines := strings.Split(masked, "\n")
+	require.NotContains(t, lines[2], "Target")
+	require.NotContains(t, lines[3], "Target")
+	require.Contains(t, lines[4], "var Target = 1")
+}
+
+// An unterminated literal must not swallow the rest of the file.
+func TestMaskNonCodeStopsAtEndOfLineForUnterminatedString(t *testing.T) {
+	src := "x = \"oops\nTarget = 1\n"
+
+	masked := MaskNonCode(src, "demo.py")
+	require.Equal(t, len(src), len(masked))
+	require.Contains(t, masked, "Target = 1")
+}
+
+func TestMaskNonCodeLeavesCommentlessFormatsAlone(t *testing.T) {
+	src := `{"key": "value"}`
+	// JSON has no comments, but its string contents are still masked.
+	masked := MaskNonCode(src, "data.json")
+	require.Equal(t, len(src), len(masked))
+	require.Contains(t, masked, `{"`)
+}

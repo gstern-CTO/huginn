@@ -232,6 +232,23 @@ func (s *Server) lspFallback(ctx context.Context, operation, path, symbol string
 	meta := protocol.Metadata{}
 	locations, searchErr := s.ripgrepSymbolSearch(ctx, symbol, limit)
 
+	// Both mechanisms failed. This must be an error, never an empty result:
+	// "no references found" and "nothing was able to look" are entirely
+	// different answers, and reporting the second as the first would have the
+	// agent confidently conclude the symbol is unused.
+	if searchErr != nil {
+		tErr := protocol.NewError(protocol.CodeDependencyMiss, false,
+			installHint(installCmd)+" "+searchErr.Hint,
+			"%s, and the fallback search could not run either: %s", reason, searchErr.Message).
+			WithDetail("languageServerError", reason).
+			WithDetail("fallbackError", searchErr.Message).
+			WithDetail("symbol", symbol)
+		if installCmd != "" {
+			tErr.WithDetail("installCommand", installCmd)
+		}
+		return protocol.Failure(tErr)
+	}
+
 	data := map[string]any{
 		"operation":      operation,
 		"path":           relativeTo(s.guard.PrimaryRoot(), path),
@@ -242,9 +259,6 @@ func (s *Server) lspFallback(ctx context.Context, operation, path, symbol string
 	}
 	if installCmd != "" {
 		data["installCommand"] = installCmd
-	}
-	if searchErr != nil {
-		data["fallbackError"] = searchErr
 	}
 
 	budget := s.budget()
@@ -499,6 +513,24 @@ func locateSymbol(path, symbol string) (int, int, bool) {
 	if err != nil {
 		return 0, 0, false
 	}
+
+	// Comments and string literals are masked before the search. A Go doc
+	// comment conventionally opens with the name of the thing it documents, so
+	// the first raw textual occurrence of a symbol is usually inside its own
+	// doc comment — and a language server asked to resolve a position in a
+	// comment or a string correctly answers "no identifier found". Masking
+	// preserves length, so the line and column found here are exact.
+	searchable := content.MaskNonCode(string(raw), path)
+
+	for i, line := range strings.Split(searchable, "\n") {
+		if loc := re.FindStringIndex(line); loc != nil {
+			return i + 1, loc[0] + 1, true
+		}
+	}
+
+	// Nothing in the code itself: fall back to the raw text so that a symbol
+	// which genuinely only appears in a comment is still located rather than
+	// reported as absent.
 	for i, line := range strings.Split(string(raw), "\n") {
 		if loc := re.FindStringIndex(line); loc != nil {
 			return i + 1, loc[0] + 1, true

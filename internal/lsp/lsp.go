@@ -149,8 +149,14 @@ type Client struct {
 	done   chan struct{}
 }
 
-func newClient(ctx context.Context, runner *security.Runner, srv ServerSpec, root string, logger *slog.Logger) (*Client, error) {
-	proc, err := runner.Start(ctx, srv.Binary, srv.Args, root)
+// newClient starts a language server and completes the initialize handshake.
+//
+// The two contexts are distinct on purpose. procCtx bounds the child process
+// and belongs to the manager, so the server survives the request that started
+// it. initCtx bounds only the handshake, so a server that is slow to come up
+// fails the current call instead of hanging it indefinitely.
+func newClient(procCtx, initCtx context.Context, runner *security.Runner, srv ServerSpec, root string, logger *slog.Logger) (*Client, error) {
+	proc, err := runner.Start(procCtx, srv.Binary, srv.Args, root)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +173,7 @@ func newClient(ctx context.Context, runner *security.Runner, srv ServerSpec, roo
 	go c.readLoop()
 	go c.drainStderr()
 
-	if err := c.initialize(ctx); err != nil {
+	if err := c.initialize(initCtx); err != nil {
 		c.Close()
 		return nil, err
 	}
@@ -417,17 +423,27 @@ type Manager struct {
 	metrics *metrics.Metrics
 	logger  *slog.Logger
 
+	// procCtx bounds the lifetime of the language server processes. It is
+	// deliberately not any single request's context: a pooled server has to
+	// outlive the tool call that happened to start it, or the next call
+	// inherits a client whose process has already been killed.
+	procCtx    context.Context
+	cancelProc context.CancelFunc
+
 	mu      sync.Mutex
 	clients map[string]*Client
 }
 
 func NewManager(runner *security.Runner, guard *security.PathGuard, metrics *metrics.Metrics, logger *slog.Logger) *Manager {
+	procCtx, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		runner:  runner,
-		guard:   guard,
-		metrics: metrics,
-		logger:  logger,
-		clients: map[string]*Client{},
+		runner:     runner,
+		guard:      guard,
+		metrics:    metrics,
+		logger:     logger,
+		procCtx:    procCtx,
+		cancelProc: cancel,
+		clients:    map[string]*Client{},
 	}
 }
 
@@ -445,7 +461,7 @@ func (m *Manager) ClientFor(ctx context.Context, srv ServerSpec, path string) (*
 
 	// Starting a server is slow (gopls indexes the module), so it happens
 	// outside the lock; a duplicate start is resolved below.
-	client, err := newClient(ctx, m.runner, srv, root, m.logger)
+	client, err := newClient(m.procCtx, ctx, m.runner, srv, root, m.logger)
 	if err != nil {
 		return nil, err
 	}
@@ -503,4 +519,8 @@ func (m *Manager) Shutdown() {
 	for _, c := range clients {
 		c.Close()
 	}
+
+	// Cancelling last guarantees every child process is gone even if a
+	// graceful shutdown handshake did not complete.
+	m.cancelProc()
 }

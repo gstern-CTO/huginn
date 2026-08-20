@@ -357,3 +357,86 @@ func leadingWidth(line string) int {
 	}
 	return n
 }
+
+// MaskNonCode returns text of exactly the same length with comment bodies and
+// string-literal contents replaced by spaces, leaving delimiters, newlines and
+// all other characters in place.
+//
+// Preserving length is the point: callers use it to find an identifier's real
+// position, so every byte offset, line and column in the result matches the
+// original. Stripping instead of masking would shift columns.
+//
+// This is what makes symbol lookup agree with a language server. A Go doc
+// comment opens with the name of the thing it documents, and a name mentioned
+// in a comment or inside a string is not an identifier — a server asked to
+// resolve either answers "no identifier found".
+func MaskNonCode(text, filename string) string {
+	syn := syntaxFor(filename)
+	out := []byte(text)
+
+	blank := func(i int) {
+		if out[i] != '\n' {
+			out[i] = ' '
+		}
+	}
+
+	for i := 0; i < len(text); {
+		if _, ok := matchLineComment(text[i:], syn.line); ok {
+			for i < len(text) && text[i] != '\n' {
+				blank(i)
+				i++
+			}
+			continue
+		}
+
+		if syn.blockOpen != "" && strings.HasPrefix(text[i:], syn.blockOpen) {
+			stop := len(text)
+			if end := strings.Index(text[i+len(syn.blockOpen):], syn.blockClose); end >= 0 {
+				stop = i + len(syn.blockOpen) + end + len(syn.blockClose)
+			}
+			for ; i < stop; i++ {
+				blank(i)
+			}
+			continue
+		}
+
+		// Raw strings have no escape processing and may span lines.
+		if syn.rawQuote != 0 && text[i] == syn.rawQuote {
+			i++
+			for i < len(text) && text[i] != syn.rawQuote {
+				blank(i)
+				i++
+			}
+			if i < len(text) {
+				i++
+			}
+			continue
+		}
+
+		if containsByte(syn.quotes, text[i]) {
+			quote := text[i]
+			i++
+			for i < len(text) && text[i] != quote {
+				if text[i] == '\n' {
+					break // unterminated literal: do not swallow the rest of the file
+				}
+				if text[i] == '\\' && i+1 < len(text) {
+					blank(i)
+					i++
+					blank(i)
+					i++
+					continue
+				}
+				blank(i)
+				i++
+			}
+			if i < len(text) && text[i] == quote {
+				i++
+			}
+			continue
+		}
+
+		i++
+	}
+	return string(out)
+}
