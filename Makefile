@@ -4,7 +4,7 @@ COMPOSE := docker compose
 
 .PHONY: all build test lint fmt vet integration cover clean install \
         docker-build docker-build-go run-local run-observed docker-smoke \
-        docker-cache-clean docker-clean smoke help
+        docker-cache-clean docker-clean smoke dist help
 
 all: lint test build
 
@@ -83,6 +83,21 @@ docker-smoke:
 ## smoke: same handshake against a locally built binary
 smoke: build
 	@scripts/mcp-smoke.sh ./bin/$(BINARY)
+
+## dist: cross-compile static binaries for every supported platform into ./dist
+##       CGO_ENABLED=0 makes them dependency-free: no Go, no libc, nothing to
+##       install on the target machine beyond the file itself.
+dist:
+	@rm -rf dist && mkdir -p dist
+	@for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do \
+		os=$${target%/*}; arch=$${target#*/}; ext=""; \
+		[ "$$os" = "windows" ] && ext=".exe"; \
+		echo "  building $$os/$$arch"; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath \
+			-ldflags="-s -w" -o dist/$(BINARY)-$$os-$$arch$$ext $(PKG) || exit 1; \
+	done
+	@cd dist && sha256sum * > SHA256SUMS 2>/dev/null || shasum -a 256 * > SHA256SUMS
+	@echo; ls -lh dist | tail -n +2 | awk '{printf "  %-30s %s\n", $$9, $$5}'
 
 ## docker-cache-clean: drop the persistent GitHub response cache volume
 docker-cache-clean:
