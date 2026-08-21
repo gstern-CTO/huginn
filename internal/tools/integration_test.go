@@ -77,24 +77,61 @@ func TestIntegrationCodeSearch(t *testing.T) {
 
 // Several queries in one call must actually run concurrently, not one after
 // another (WEAKNESSES.md #1).
+//
+// The comparison is against a measured single-query baseline rather than a
+// fixed wall-clock bound, so the test calibrates itself to whatever the network
+// is doing instead of failing on a slow day.
 func TestIntegrationBulkSearchRunsInParallel(t *testing.T) {
 	srv := newIntegrationServer(t)
 
-	queries := []any{}
-	for _, kw := range []string{"ServeStdio", "NewMCPServer", "CallToolRequest", "ToolHandlerFunc"} {
-		queries = append(queries, map[string]any{
-			"keywords": []any{kw}, "owner": "mark3labs", "repo": "mcp-go",
+	one := func(keywords ...string) (*protocol.Envelope, time.Duration) {
+		queries := make([]any, 0, len(keywords))
+		for _, kw := range keywords {
+			queries = append(queries, map[string]any{
+				"keywords": []any{kw}, "owner": "mark3labs", "repo": "mcp-go",
+			})
+		}
+		start := time.Now()
+		env := callLive(t, srv, "github_search_code", map[string]any{
+			"queries": queries, "concise": true, "limit": 3,
 		})
+		return env, time.Since(start)
 	}
 
-	start := time.Now()
-	env := callLive(t, srv, "github_search_code", map[string]any{"queries": queries, "concise": true, "limit": 3})
-	elapsed := time.Since(start)
+	// Any per-query failure has to be reported as itself. Blaming slow wall
+	// clock on "sequential execution" when the real cause was a timeout or a
+	// rejected credential sends the next reader hunting the wrong bug — which
+	// is exactly what this test used to do in CI.
+	requireEveryQuerySucceeded := func(env *protocol.Envelope, label string) {
+		t.Helper()
+		require.NotEqual(t, protocol.StatusError, env.Status, "%s: %+v", label, env.Error)
 
-	require.NotEqual(t, protocol.StatusError, env.Status, "%+v", env.Error)
-	// Four sequential code searches against GitHub reliably exceed this;
-	// four concurrent ones do not.
-	require.Less(t, elapsed, 20*time.Second, "bulk queries appear to be running sequentially")
+		data, ok := env.Data.(map[string]any)
+		require.True(t, ok, "%s: unexpected payload shape", label)
+		results, ok := data["results"].([]codeSearchResult)
+		require.True(t, ok, "%s: unexpected results shape", label)
+
+		for _, r := range results {
+			require.Nil(t, r.Error,
+				"%s: query %q failed (%v) — the elapsed time below would say nothing about concurrency",
+				label, r.Query, r.Error)
+		}
+	}
+
+	baselineEnv, baseline := one("ServeStdio")
+	requireEveryQuerySucceeded(baselineEnv, "baseline")
+
+	bulkEnv, bulk := one("ServeStdio", "NewMCPServer", "CallToolRequest", "ToolHandlerFunc")
+	requireEveryQuerySucceeded(bulkEnv, "bulk")
+
+	t.Logf("1 query: %s   4 queries: %s", baseline.Round(time.Millisecond), bulk.Round(time.Millisecond))
+
+	// Four sequential queries would take roughly four baselines. Allowing two
+	// and a half leaves room for scheduling and a slow straggler while still
+	// failing loudly if the fan-out ever regresses to a loop.
+	require.Less(t, bulk, 5*baseline/2,
+		"4 concurrent queries took %s against a %s single-query baseline, which is close to sequential",
+		bulk.Round(time.Millisecond), baseline.Round(time.Millisecond))
 }
 
 func TestIntegrationFileContentIsCached(t *testing.T) {

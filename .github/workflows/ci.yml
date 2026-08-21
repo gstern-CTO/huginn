@@ -53,8 +53,12 @@ jobs:
   integration:
     name: Live GitHub tests
     runs-on: ubuntu-latest
-    # The default GITHUB_TOKEN is enough for public reads, so these run on
-    # every push rather than only when someone remembers to trigger them.
+    # Deliberately NOT secrets.GITHUB_TOKEN. The workflow token cannot drive
+    # GitHub's code-search API, so those requests hang until the request
+    # deadline and the suite fails for a reason that has nothing to do with the
+    # code. Set a repository secret named HUGINN_TEST_TOKEN to a personal
+    # access token to enable these; without it every integration test skips
+    # itself, which is the honest outcome rather than a red tick.
     steps:
       - uses: actions/checkout@v4
 
@@ -68,8 +72,12 @@ jobs:
 
       - name: Run integration suite
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: go test -tags=integration -count=1 -v ./internal/tools/
+          GITHUB_TOKEN: ${{ secrets.HUGINN_TEST_TOKEN }}
+        run: |
+          if [ -z "${GITHUB_TOKEN}" ]; then
+            echo "::notice::HUGINN_TEST_TOKEN is not set — the live GitHub tests will skip."
+          fi
+          go test -tags=integration -count=1 -v ./internal/tools/
 
   container:
     name: Container image
