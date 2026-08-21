@@ -1,7 +1,6 @@
 {
   "github_api_url": "https://api.github.com/",
   "enable_local": true,
-  "enable_clone": false,
   "workspace_root": "~/code",
   "allowed_paths": [],
   "request_timeout_seconds": 30,

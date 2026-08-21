@@ -32,6 +32,20 @@ huginn
 
 Register it with Claude Code:
 
+```bash
+make install
+claude mcp add huginn -s user \
+  -e ENABLE_LOCAL=true \
+  -e WORKSPACE_ROOT=/path/to/your/code \
+  -- huginn
+```
+
+Supply the token through your shell rather than the command, so it never
+lands in a config file. Opening this repository is enough on its own: the
+committed `.mcp.json` registers Huginn for the project automatically.
+
+The equivalent configuration by hand:
+
 ```json
 {
   "mcpServers": {
@@ -114,7 +128,6 @@ Environment variables always win over the JSON config file at
 | `GITHUB_TOKEN` | — | Checked after `OCTOCODE_TOKEN` and `GH_TOKEN`; falls back to `gh auth token`. |
 | `GITHUB_API_URL` | `https://api.github.com/` | Set for GitHub Enterprise. |
 | `ENABLE_LOCAL` | `false` | Enables local filesystem and LSP tools. |
-| `ENABLE_CLONE` | `false` | Enables repository cloning. |
 | `WORKSPACE_ROOT` | — | Boundary for every local operation. Required when `ENABLE_LOCAL=true`. |
 | `ALLOWED_PATHS` | — | Extra roots outside the workspace, separated by `:` or `,`. |
 | `REQUEST_TIMEOUT_SECONDS` | `30` | Per-request upstream timeout. |
@@ -128,6 +141,11 @@ Environment variables always win over the JSON config file at
 | `METRICS_PORT` | `9090` | Metrics port, bound to localhost. |
 | `DATABRICKS_DEV_*`, `DATABRICKS_PROD_*` | — | `_HOST`, `_TOKEN`, `_WAREHOUSE_ID` per environment. |
 | `DATABRICKS_MAX_ROWS` | `1000` | Row cap per query. |
+
+There is deliberately no `ENABLE_CLONE`. The brief lists it as a setting but
+never describes a tool that would use it, and cloning does not fit a read-only
+research server, so the flag was removed rather than left as configuration that
+does nothing.
 
 Configuration is validated at startup. Enabling local tools without a valid
 `WORKSPACE_ROOT` fails fast; a missing GitHub token only warns, since

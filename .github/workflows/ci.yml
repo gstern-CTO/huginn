@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ripgrep is what local_search_code shells out to. Installing it here
+      # means the command-injection and search tests actually run instead of
+      # skipping, which is the point of having them.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Install gopls
+        run: go install golang.org/x/tools/gopls@latest
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+      # Proves the binary still speaks the protocol and that nothing has
+      # started writing to stdout, which no unit test can catch.
+      - name: MCP handshake
+        env:
+          ENABLE_LOCAL: "true"
+          WORKSPACE_ROOT: ${{ github.workspace }}
+          METRICS_ENABLED: "false"
+        run: |
+          make build
+          scripts/mcp-smoke.sh ./bin/huginn
+
+  integration:
+    name: Live GitHub tests
+    runs-on: ubuntu-latest
+    # The default GITHUB_TOKEN is enough for public reads, so these run on
+    # every push rather than only when someone remembers to trigger them.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install gopls
+        run: go install golang.org/x/tools/gopls@latest
+
+      - name: Run integration suite
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: go test -tags=integration -count=1 -v ./internal/tools/
+
+  container:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --target runtime -t huginn:ci .
+
+      # The container ships ripgrep precisely so local search works on a host
+      # that lacks it; this checks the image still starts and registers
+      # every tool.
+      - name: Handshake through the container
+        run: |
+          scripts/mcp-smoke.sh docker run --rm -i \
+            --mount type=bind,src="$PWD",dst=/workspace,ro \
+            -e ENABLE_LOCAL=true \
+            -e METRICS_ENABLED=false \
+            huginn:ci

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "huginn": {
+      "command": "huginn",
+      "args": [],
+      "env": {
+        "ENABLE_LOCAL": "true",
+        "WORKSPACE_ROOT": "${PWD}",
+        "METRICS_ENABLED": "false",
+        "GITHUB_TOKEN": "${GITHUB_TOKEN:-}"
+      }
+    }
+  }
+}

@@ -18,7 +18,7 @@ func clearConfigEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
 		"OCTOCODE_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_API_URL",
-		"ENABLE_LOCAL", "ENABLE_CLONE", "WORKSPACE_ROOT", "ALLOWED_PATHS",
+		"ENABLE_LOCAL", "WORKSPACE_ROOT", "ALLOWED_PATHS",
 		"REQUEST_TIMEOUT_SECONDS", "MAX_RETRIES", "MAX_RESPONSE_TOKENS",
 		"GITHUB_CONCURRENCY", "CACHE_DIR", "CACHE_TTL_SECONDS",
 		"METRICS_ENABLED", "METRICS_PORT", "DATABRICKS_MAX_ROWS",
@@ -52,7 +52,6 @@ func TestConfigDefaultsApplyWhenNothingIsSet(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, DefaultGitHubAPIURL, cfg.GitHubAPIURL)
 	require.False(t, cfg.EnableLocal, "local access must be off unless explicitly enabled")
-	require.False(t, cfg.EnableClone, "cloning must be off unless explicitly enabled")
 	require.Equal(t, protocol.DefaultMaxTokens, cfg.MaxResponseTokens)
 	require.Equal(t, defaultGitHubConcurrency, cfg.GitHubConcurrency)
 	require.NotEmpty(t, warnings, "a missing GitHub token must warn rather than fail")

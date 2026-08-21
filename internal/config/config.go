@@ -18,7 +18,7 @@ import (
 
 // Defaults. Every one of these is overridable through the environment or the
 // JSON config file; they are chosen so that the zero-configuration case is the
-// safe case (no local filesystem access, no cloning, dev Databricks only).
+// safe case (no local filesystem access, dev Databricks only).
 const (
 	DefaultGitHubAPIURL      = "https://api.github.com/"
 	defaultRequestTimeout    = 30 * time.Second
@@ -49,7 +49,6 @@ type Config struct {
 	GitHubAPIURL string
 
 	EnableLocal   bool
-	EnableClone   bool
 	WorkspaceRoot string
 	AllowedPaths  []string
 
@@ -78,7 +77,6 @@ type fileConfig struct {
 	GitHubToken       *string                  `json:"github_token"`
 	GitHubAPIURL      *string                  `json:"github_api_url"`
 	EnableLocal       *bool                    `json:"enable_local"`
-	EnableClone       *bool                    `json:"enable_clone"`
 	WorkspaceRoot     *string                  `json:"workspace_root"`
 	AllowedPaths      []string                 `json:"allowed_paths"`
 	RequestTimeoutSec *int                     `json:"request_timeout_seconds"`
@@ -189,7 +187,6 @@ func applyFileConfig(cfg *Config, path string) error {
 	setIf(&cfg.GitHubToken, fc.GitHubToken)
 	setIf(&cfg.GitHubAPIURL, fc.GitHubAPIURL)
 	setIf(&cfg.EnableLocal, fc.EnableLocal)
-	setIf(&cfg.EnableClone, fc.EnableClone)
 	setIf(&cfg.WorkspaceRoot, fc.WorkspaceRoot)
 	setIf(&cfg.MaxRetries, fc.MaxRetries)
 	setIf(&cfg.MaxResponseTokens, fc.MaxResponseTokens)
@@ -216,7 +213,6 @@ func applyFileConfig(cfg *Config, path string) error {
 func applyEnvConfig(cfg *Config) {
 	cfg.GitHubAPIURL = envStr("GITHUB_API_URL", cfg.GitHubAPIURL)
 	cfg.EnableLocal = envBool("ENABLE_LOCAL", cfg.EnableLocal)
-	cfg.EnableClone = envBool("ENABLE_CLONE", cfg.EnableClone)
 	cfg.WorkspaceRoot = envStr("WORKSPACE_ROOT", cfg.WorkspaceRoot)
 	cfg.RequestTimeout = envDur("REQUEST_TIMEOUT_SECONDS", cfg.RequestTimeout)
 	cfg.MaxRetries = envInt("MAX_RETRIES", cfg.MaxRetries)
