@@ -17,6 +17,7 @@ are easy to violate by accident.
 | --- | --- | --- | --- |
 | [1](0001-response-envelope-and-structured-errors.md) | Response envelope and structured errors | 2026-08-20 | Implemented · retroactive |
 | [2](0002-language-server-lifetime-and-symbol-location.md) | Language server lifetime and symbol location | 2026-08-20 | Implemented |
+| [3](0003-feedback-driven-agent-improvements.md) | Feedback-Driven Agent improvements | 2026-08-20 | **Proposed** — awaiting approval |
 
 ## Conventions
 
