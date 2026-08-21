@@ -128,7 +128,8 @@ func ValidateReadOnlySQL(statement string) *protocol.ToolError {
 	if hasMultipleStatements(stripped) {
 		return protocol.NewError(protocol.CodeForbiddenSQL, false,
 			"Send exactly one SELECT statement per call.",
-			"multiple SQL statements in one call are not allowed")
+			"multiple SQL statements in one call are not allowed").
+			WithDocs(protocol.DocsReadOnlySQL)
 	}
 
 	upperWords := wordRe.FindAllString(strings.ToUpper(stripped), -1)
@@ -141,7 +142,8 @@ func ValidateReadOnlySQL(statement string) *protocol.ToolError {
 		return protocol.NewError(protocol.CodeForbiddenSQL, false,
 			"Only read queries are permitted. Rewrite this as a SELECT, SHOW, DESCRIBE or EXPLAIN.",
 			"statement begins with %q, which is not a read operation", upperWords[0]).
-			WithDetail("leadingKeyword", upperWords[0])
+			WithDetail("leadingKeyword", upperWords[0]).
+			WithDocs(protocol.DocsReadOnlySQL)
 	}
 
 	// And must not contain a mutating verb anywhere. Word-boundary matching
@@ -158,7 +160,8 @@ func ValidateReadOnlySQL(statement string) *protocol.ToolError {
 			return protocol.NewError(protocol.CodeForbiddenSQL, false,
 				fmt.Sprintf("This tool is read-only. Remove %s from the statement; if you need the data it would produce, express it as a SELECT.", verb),
 				"statement contains the forbidden keyword %s", verb).
-				WithDetail("forbiddenKeyword", verb)
+				WithDetail("forbiddenKeyword", verb).
+				WithDocs(protocol.DocsReadOnlySQL)
 		}
 	}
 	return nil

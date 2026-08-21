@@ -64,6 +64,11 @@ type ToolError struct {
 	Retryable bool           `json:"retryable"`
 	Hint      string         `json:"hint"`
 	Details   map[string]any `json:"details,omitempty"`
+	// Docs points at a document explaining this class of failure, for the
+	// errors whose repair is not obvious from the hint alone. It is the
+	// "dynamic skill-mapping" half of the feedback loop: the agent is handed
+	// the specific reference rather than a log line (Design Log #3).
+	Docs string `json:"docs,omitempty"`
 }
 
 func (e *ToolError) Error() string {
@@ -71,6 +76,29 @@ func (e *ToolError) Error() string {
 		return "<nil>"
 	}
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+// Documentation URLs for error classes whose repair needs more than a hint.
+//
+// These are URLs rather than workspace paths on purpose. Huginn is installed as
+// a standalone binary and its source repository is frequently not present on
+// the machine at all, so a relative path would resolve to nothing — or worse,
+// to an unrelated file under whatever workspace root happens to be configured.
+const docsBase = "https://github.com/gstern-CTO/huginn/blob/main/docs/errors/"
+
+const (
+	DocsGitHubQuerySyntax = docsBase + "github-query-syntax.md"
+	DocsReadOnlySQL       = docsBase + "read-only-sql.md"
+	DocsRipgrepPatterns   = docsBase + "ripgrep-patterns.md"
+)
+
+// WithDocs attaches a reference explaining how to repair this error. Applied at
+// the specific error site rather than derived from the code, because one code
+// covers several unrelated repairs — an INVALID_INPUT about GitHub query
+// syntax and one about a line number need different references.
+func (e *ToolError) WithDocs(url string) *ToolError {
+	e.Docs = url
+	return e
 }
 
 // WithDetail attaches a piece of structured context to the error.

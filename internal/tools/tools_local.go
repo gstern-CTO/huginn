@@ -127,7 +127,8 @@ func (s *Server) handleLocalSearchCode(ctx context.Context, req mcp.CallToolRequ
 	if res.ExitCode > 1 {
 		return protocol.Failure(protocol.NewError(protocol.CodeInvalidInput, false,
 			"Check the pattern syntax; set regex=false to search for it literally.",
-			"ripgrep rejected the search: %s", strings.TrimSpace(firstLine(res.Stderr))))
+			"ripgrep rejected the search: %s", strings.TrimSpace(firstLine(res.Stderr))).
+			WithDocs(protocol.DocsRipgrepPatterns))
 	}
 
 	meta := protocol.Metadata{}

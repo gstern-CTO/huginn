@@ -287,7 +287,8 @@ func MapError(err error, what string) *protocol.ToolError {
 		case http.StatusUnprocessableEntity:
 			return protocol.NewError(protocol.CodeInvalidInput, false,
 				"GitHub rejected the query syntax. Simplify the query: remove qualifiers and retry with plain keywords.",
-				"GitHub could not process the request while %s: %s", what, errResp.Message)
+				"GitHub could not process the request while %s: %s", what, errResp.Message).
+				WithDocs(protocol.DocsGitHubQuerySyntax)
 		}
 		if errResp.Response.StatusCode >= 500 {
 			return protocol.NewError(protocol.CodeUpstream, true,

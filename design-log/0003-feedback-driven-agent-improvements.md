@@ -1,7 +1,7 @@
 # Design Log #3 — Feedback-Driven Agent improvements
 
 **Date:** 2026-08-20
-**Status:** **Proposed — awaiting approval.** No code written.
+**Status:** Change A **implemented**. Changes B and C remain proposed.
 **Affects:** `internal/tools` (schemas), `internal/protocol` (ToolError), `docs/`
 **Constraints from:** Design Log #1 (envelope contract), Workspace Log #1
 
@@ -204,4 +204,58 @@ at 11 tools, and it may trade tokens for latency. Needs Q7 and Q8 answered.
 
 ## Implementation Results
 
-*Empty: this log is a proposal and has not been approved. Nothing implemented.*
+*Appended during implementation. The sections above are frozen.*
+
+**2026-08-20 — Change A implemented. B and C not approved, not built.**
+
+`ToolError` gained a `Docs string` field with `omitempty`, plus a `WithDocs`
+method. Eight error sites carry a reference, across three repair topics:
+
+| Topic | Sites | Document |
+| --- | --- | --- |
+| GitHub query syntax | 3 in `buildCodeQuery`, 1 on GitHub's own 422 | `docs/errors/github-query-syntax.md` |
+| Read-only SQL | 3 in `ValidateReadOnlySQL` | `docs/errors/read-only-sql.md` |
+| ripgrep patterns | 1 on a rejected pattern | `docs/errors/ripgrep-patterns.md` |
+
+**Verification.**
+
+| Criterion | Result |
+| --- | --- |
+| 1. `tools/list` ≤ 2,200 tokens | **N/A** — that criterion belongs to change B, which was not built. Measured anyway: 13,677 bytes / ~3,419 tokens, byte-identical to before, confirming A costs nothing upfront. |
+| 2. Every referenced document exists | ✅ `TestEveryDocsURLPointsAtAFileThatExists` resolves each URL to a repository file and fails if one is missing or under 200 bytes |
+| 3. Reference reaches the agent | ✅ verified live over stdio: a stacked-statement refusal returns `FORBIDDEN_SQL` with the `docs` URL; also `TestRefusedSQLCarriesADocsReference` asserts it survives JSON encoding |
+| 4. No regression | ✅ `make lint` clean, `go test -race ./...` all 10 packages passing, handshake still lists 11 tools |
+| 5. Reversible by config flag | **N/A** — belongs to change B |
+
+**Deviations from the design.**
+
+1. **`docs` carries a URL, not a workspace-relative path.** Q5 claimed the agent
+   could read the document with Huginn's own `local_file_content`. That is wrong
+   for an installed binary: the source repository is frequently absent from the
+   machine, and a relative path would resolve against whatever `WORKSPACE_ROOT`
+   is configured — under `~/Documents/PROJECTS` it would point at
+   `PROJECTS/docs/errors/…`, which does not exist. A URL always resolves, and it
+   matches the article's `remediation_instruction_url` exactly. The cost is that
+   reading it needs network access.
+
+2. **No error-code → document table.** The design specified one. It cannot work:
+   `INVALID_INPUT` covers GitHub query syntax, ripgrep patterns, line numbers and
+   several other unrelated repairs, so a code-keyed table would hand the agent
+   the wrong document more often than the right one. References are attached at
+   the error site instead. `TestSameCodeCanCarryDifferentDocs` pins this down.
+
+3. **Documents are named by topic, not by code** — `github-query-syntax.md`
+   rather than `INVALID_INPUT.md`. Follows directly from deviation 2.
+
+4. **One extra site beyond Q6's three topics**: GitHub's own 422 response in
+   `ghclient.MapError`. Same repair topic as the locally-detected query errors,
+   so it would have been odd to leave it bare.
+
+**Explicitly not done.** `PATH_DENIED` and `FILE_TOO_LARGE` carry no reference,
+per Q6 — their hints already contain the whole repair.
+`TestSelfExplanatoryErrorsCarryNoDocsReference` asserts they stay bare, so the
+field does not spread by habit.
+
+**Still open.** Q7 and Q8 are unanswered, so changes B and C stay proposed. The
+metrics needed for Q7 (`huginn_tool_calls_total{tool}`) are already being
+recorded.

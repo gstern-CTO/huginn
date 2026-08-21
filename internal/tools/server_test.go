@@ -396,3 +396,42 @@ func TestLSPDoubleFailureIsAnErrorNotAnEmptyResult(t *testing.T) {
 	require.Contains(t, env.Error.Details, "fallbackError")
 	require.NotEmpty(t, env.Error.Hint)
 }
+
+// The reference has to survive the whole path out to the agent, not just exist
+// on the error struct (Design Log #3, change A).
+func TestRefusedSQLCarriesADocsReference(t *testing.T) {
+	srv, _ := newTestServer(t, false)
+
+	env := call(t, srv, "databricks_query", map[string]any{"statement": "DROP TABLE telemetry.dns"})
+
+	require.Equal(t, protocol.StatusError, env.Status)
+	require.Equal(t, protocol.CodeForbiddenSQL, env.Error.Code)
+	require.Equal(t, protocol.DocsReadOnlySQL, env.Error.Docs,
+		"a refused statement must point at the reference that explains what is allowed")
+
+	// It must also survive JSON encoding, which is what the client actually sees.
+	payload, err := json.Marshal(env)
+	require.NoError(t, err)
+	require.Contains(t, string(payload), protocol.DocsReadOnlySQL)
+}
+
+// Errors whose repair is already obvious from the hint gain nothing from a
+// reference and must not carry one.
+func TestSelfExplanatoryErrorsCarryNoDocsReference(t *testing.T) {
+	srv, root := newTestServer(t, true)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "big.log"),
+		[]byte(strings.Repeat("line of log output\n", 500)), 0o644))
+
+	for _, tc := range []struct {
+		name string
+		tool string
+		args map[string]any
+	}{
+		{"path denied", "local_file_content", map[string]any{"path": "/etc/passwd"}},
+		{"file too large", "local_file_content", map[string]any{"path": "big.log"}},
+	} {
+		env := call(t, srv, tc.tool, tc.args)
+		require.Equal(t, protocol.StatusError, env.Status, tc.name)
+		require.Empty(t, env.Error.Docs, "%s already explains itself in the hint", tc.name)
+	}
+}

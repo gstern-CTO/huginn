@@ -234,10 +234,10 @@ func buildCodeQuery(q codeSearchQuery) (string, *protocol.ToolError) {
 		}
 	}
 	if len(terms) == 0 {
-		return "", protocol.ErrInvalidInput("each query needs at least one keyword")
+		return "", protocol.ErrInvalidInput("each query needs at least one keyword").WithDocs(protocol.DocsGitHubQuerySyntax)
 	}
 	if q.Repo != "" && q.Owner == "" {
-		return "", protocol.ErrInvalidInput("repo filter %q requires an owner", q.Repo)
+		return "", protocol.ErrInvalidInput("repo filter %q requires an owner", q.Repo).WithDocs(protocol.DocsGitHubQuerySyntax)
 	}
 
 	parts := []string{strings.Join(terms, " ")}
@@ -261,7 +261,7 @@ func buildCodeQuery(q codeSearchQuery) (string, *protocol.ToolError) {
 	case "path":
 		parts = append(parts, "in:path")
 	default:
-		return "", protocol.ErrInvalidInput("match must be 'file' or 'path', got %q", q.Match)
+		return "", protocol.ErrInvalidInput("match must be 'file' or 'path', got %q", q.Match).WithDocs(protocol.DocsGitHubQuerySyntax)
 	}
 	return strings.Join(parts, " "), nil
 }
