@@ -14,12 +14,16 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 COPY . .
 
+# The release workflow passes the git tag here so the binary reports its real
+# version. Left unset for a local build, which keeps the in-source default.
+ARG VERSION=""
+
 # A static binary so the runtime stage can stay minimal.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
         -trimpath \
-        -ldflags="-s -w" \
+        -ldflags="-s -w ${VERSION:+-X github.com/gstern-CTO/huginn/internal/tools.ServerVersion=$VERSION}" \
         -o /out/huginn ./cmd/huginn
 
 # ---------------------------------------------------------------------------

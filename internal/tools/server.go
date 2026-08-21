@@ -19,10 +19,13 @@ import (
 	"github.com/gstern-CTO/huginn/internal/security"
 )
 
-const (
-	ServerName    = "huginn"
-	ServerVersion = "0.1.0"
-)
+const ServerName = "huginn"
+
+// ServerVersion is a var, not a const, so a release build can inject the tag
+// with -ldflags "-X .../internal/tools.ServerVersion=1.2.3". A const cannot be
+// overridden that way, and a binary that misreports its own version is a
+// support problem waiting to happen (Design Log #4).
+var ServerVersion = "0.1.0-dev"
 
 // Server holds every collaborator a tool might need. Tools receive it rather
 // than reaching for globals, which keeps them testable.

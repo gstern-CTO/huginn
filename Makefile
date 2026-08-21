@@ -2,6 +2,11 @@ BINARY  := huginn
 PKG     := ./cmd/huginn
 COMPOSE := docker compose
 
+# Set by the release workflow from the git tag. Empty locally, which leaves the
+# in-source default so a dev build is never mistaken for a release.
+VERSION ?=
+VERSION_LDFLAGS := $(if $(VERSION),-X github.com/gstern-CTO/huginn/internal/tools.ServerVersion=$(VERSION),)
+
 .PHONY: all build test lint fmt vet integration cover clean install \
         docker-build docker-build-go run-local run-observed docker-smoke \
         docker-cache-clean docker-clean smoke dist help
@@ -94,7 +99,8 @@ dist:
 		[ "$$os" = "windows" ] && ext=".exe"; \
 		echo "  building $$os/$$arch"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath \
-			-ldflags="-s -w" -o dist/$(BINARY)-$$os-$$arch$$ext $(PKG) || exit 1; \
+			-ldflags="-s -w $(VERSION_LDFLAGS)" \
+			-o dist/$(BINARY)-$$os-$$arch$$ext $(PKG) || exit 1; \
 	done
 	@cd dist && sha256sum * > SHA256SUMS 2>/dev/null || shasum -a 256 * > SHA256SUMS
 	@echo; ls -lh dist | tail -n +2 | awk '{printf "  %-30s %s\n", $$9, $$5}'

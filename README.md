@@ -220,6 +220,32 @@ rejected before it leaves the process if it is anything other than a single
 
 ## Docker
 
+### Install from the published image
+
+Once a release exists, a machine needs only Docker — no Go, no ripgrep, no
+repository access:
+
+```bash
+./huginn-docker.sh --workspace ~/code --git-token ghp_...
+```
+
+That pulls `ghcr.io/gstern-cto/huginn`, registers the container form with
+Claude Code, and verifies it connects. Pin a version with `--tag 0.1.0`.
+
+The image is public even though the source is private — on GitHub, package
+visibility is independent of repository visibility. The image carries no source:
+the multi-stage build discards the stage that holds it, leaving Alpine, ripgrep,
+git and one compiled binary. Go does embed source *file paths* for stack traces,
+so package structure is visible; the code is not.
+
+One disadvantage over the native install: the token is part of the `docker run`
+command rather than an environment variable, so `claude mcp list` prints it in
+clear text. `./huginn.sh` does not have this problem.
+
+Releases are cut by pushing a version tag, which builds `linux/amd64` and
+`linux/arm64`, publishes `X.Y.Z`, `X.Y` and `latest`, and attaches the static
+binaries to the GitHub Release. Nothing publishes from `main`.
+
 ### How a containerised MCP server actually works
 
 Huginn speaks MCP over stdio. There is no port to connect to and no daemon to

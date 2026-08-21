@@ -1,0 +1,111 @@
+name: Release
+
+# Version tags only. Nothing here runs on a push to main: an image that moves
+# under people who did not ask for a new version is how you get
+# "it worked yesterday" (Design Log #4, Q4).
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # attach binaries to the Release
+  packages: write # push the image to GHCR
+
+env:
+  # GHCR requires a lowercase image reference.
+  IMAGE: ghcr.io/gstern-cto/huginn
+
+jobs:
+  # Nothing is published unless the suite passes. A broken release is worse
+  # than a late one.
+  test:
+    name: Test before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Install gopls
+        run: go install golang.org/x/tools/gopls@latest
+      - run: make lint
+      - run: go test -race -count=1 ./...
+
+  image:
+    name: Publish container image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive the version from the tag
+        id: v
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "version_minor=${version%.*}" >> "$GITHUB_OUTPUT"
+
+      # arm64 needs emulation on an amd64 runner.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 1.2.3 and 1.2 are immutable; latest moves, but only on a release.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
+            ${{ env.IMAGE }}:${{ steps.v.outputs.version_minor }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            VERSION=${{ steps.v.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Off by default here: attestations record the source repository URL
+          # and build parameters in a registry that is public while the
+          # repository is private (Design Log #4, Q8).
+          provenance: false
+          sbom: false
+
+      - name: Confirm the published image runs and reports its version
+        run: |
+          docker run --rm "${IMAGE}:${{ steps.v.outputs.version }}" --version
+
+  binaries:
+    name: Publish static binaries
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-compile
+        run: make dist VERSION="${GITHUB_REF_NAME#v}"
+
+      # Only people with repository access can see a Release. The image is the
+      # channel for everyone else.
+      - name: Attach to the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/huginn-*
+            dist/SHA256SUMS
+          generate_release_notes: true
