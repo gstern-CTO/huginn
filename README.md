@@ -30,7 +30,36 @@ export WORKSPACE_ROOT=~/code
 huginn
 ```
 
-Register it with Claude Code:
+Two scripts handle setup. Run them in order:
+
+```bash
+./pre-run.sh                              # what is installed, what is missing
+./huginn.sh --git-token ghp_...           # register with Claude Code
+```
+
+`pre-run.sh` checks every dependency Huginn can use — the binary, Go, git, the
+Claude Code CLI, ripgrep, all nine language servers, the GitHub token (and
+verifies it against the API), the workspace root, Databricks variables, the
+cache directory and the metrics port. It never stops at the first problem: it
+runs every check and prints one report grouped into required, recommended and
+optional, each with an install command. Exit status is non-zero only when
+something **required** is missing.
+
+`huginn.sh` verifies the token before writing it anywhere, replaces any previous
+registration, and confirms the server reports Connected afterwards. Useful flags:
+
+```bash
+./huginn.sh --git-token-file ~/.tok       # keeps the token out of shell history
+./huginn.sh --no-token                    # local tools only, 6 of 11
+./huginn.sh --workspace ~/code --metrics  # set the root, publish metrics
+./huginn.sh --git-token ghp_... --dry-run # show the command, change nothing
+```
+
+Prefer `--git-token-file`: a token in the command line is visible in shell
+history and to `ps`. Either way Claude Code stores it in `~/.claude.json` in
+plain text — that is how MCP environment variables work.
+
+Or register by hand:
 
 ```bash
 make install
