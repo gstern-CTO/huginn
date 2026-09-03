@@ -5,11 +5,6 @@ over stdio, giving any MCP-compatible AI client — Claude Code, Cursor, and oth
 the ability to research code: search GitHub, read local files, navigate codebases
 semantically through a language server, and query Databricks for pipeline telemetry.
 
-It is a clean-room Go equivalent of [OctoCode](https://github.com/bgauryy/octocode),
-built to fix that project's known weaknesses and to avoid its PolyForm Small
-Business licence, which prohibits use by organisations above 100 employees or
-$1M revenue. Huginn is MIT licensed and fully owned by the team.
-
 ---
 
 ## Install
