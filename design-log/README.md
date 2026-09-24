@@ -18,7 +18,8 @@ are easy to violate by accident.
 | [1](0001-response-envelope-and-structured-errors.md) | Response envelope and structured errors | 2026-08-20 | Implemented · retroactive |
 | [2](0002-language-server-lifetime-and-symbol-location.md) | Language server lifetime and symbol location | 2026-08-20 | Implemented |
 | [3](0003-feedback-driven-agent-improvements.md) | Feedback-Driven Agent improvements | 2026-08-20 | Change A implemented · B and C proposed |
-| [4](0004-distribution-via-ghcr.md) | Distribution: public image, private source | 2026-08-21 | Implemented · not yet published |
+| [4](0004-distribution-via-ghcr.md) | Distribution: public image, private source | 2026-08-21 | Implemented · published v0.1.0 |
+| [5](0005-clickhouse-support.md) | ClickHouse support | 2026-09-23 | **Proposed** — awaiting approval |
 
 ## Conventions
 
