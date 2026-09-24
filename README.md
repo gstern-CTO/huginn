@@ -33,9 +33,11 @@ Two scripts handle setup. Run them in order:
 ```
 
 `pre-run.sh` checks every dependency Huginn can use — the binary, Go, git, the
-Claude Code CLI, ripgrep, all nine language servers, the GitHub token (and
-verifies it against the API), the workspace root, Databricks variables, the
-cache directory and the metrics port. It never stops at the first problem: it
+Claude Code CLI, ripgrep, all nine language servers, the GitHub token (verified
+against the API), the workspace root, Databricks variables, ClickHouse (each
+environment probed with `SELECT version()`, so a wrong password or an
+unreachable service is caught here rather than on the first query), the cache
+directory and the metrics port. It never stops at the first problem: it
 runs every check and prints one report grouped into required, recommended and
 optional, each with an install command. Exit status is non-zero only when
 something **required** is missing.

@@ -59,6 +59,16 @@ section() { [ "$QUIET" = 1 ] || printf '\n%s%s%s\n' "$BOLD" "$1" "$N"; }
 # ripgrep as present when no ripgrep binary exists.
 have() { type -P "$1" >/dev/null 2>&1; }
 
+# env_first echoes the value of the first named variable that is set, so a
+# setting can have a primary name and a fallback.
+env_first() {
+    local name
+    for name in "$@"; do
+        [ -n "$name" ] || continue
+        if [ -n "${!name:-}" ]; then printf '%s' "${!name}"; return; fi
+    done
+}
+
 version_of() {
     case "$1" in
         go)     go version 2>/dev/null | awk '{print $3}' ;;
@@ -248,20 +258,77 @@ for env_name in DEV PROD; do
     fi
 done
 
-# ClickHouse: URL, user and password together, or none.
-for env_name in DEV PROD; do
-    url="CLICKHOUSE_${env_name}_URL"; usr="CLICKHOUSE_${env_name}_USER"; pw="CLICKHOUSE_${env_name}_PASSWORD"
-    if [ -n "${!url:-}" ] || [ -n "${!usr:-}" ] || [ -n "${!pw:-}" ]; then
-        if [ -n "${!url:-}" ] && [ -n "${!usr:-}" ] && [ -n "${!pw:-}" ]; then
-            ok "ClickHouse ${env_name,,}" "${!url}"
-        else
-            warn "ClickHouse ${env_name,,}" "partially configured — needs URL, USER and PASSWORD"
-            NOTES+=("ClickHouse ${env_name,,} is half-configured. All three of $url, $usr and $pw are required.")
-        fi
-    else
-        [ "$QUIET" = 1 ] || printf '  %s-%s %-32s %s%s%s\n' "$DIM" "$N" "ClickHouse ${env_name,,}" "$DIM" "not configured — clickhouse_query unavailable for this environment" "$N"
+# ClickHouse. Checked like the GitHub token rather than the Databricks
+# variables: presence alone proves nothing, and a wrong password or an
+# unreachable host is exactly what you want to learn here rather than on the
+# first query.
+check_clickhouse_env() {
+    local label="$1" prefix="$2" url usr pw db
+
+    url="$(env_first "${prefix}_URL" "$3")"
+    usr="$(env_first "${prefix}_USER" "$4")"
+    pw="$(env_first "${prefix}_PASSWORD" "$5")"
+    db="$(env_first "${prefix}_DATABASE" "${6:-}")"
+
+    if [ -z "$url" ] && [ -z "$usr" ] && [ -z "$pw" ]; then
+        [ "$QUIET" = 1 ] || printf '  %s-%s %-32s %s%s%s\n' "$DIM" "$N" "ClickHouse $label" \
+            "$DIM" "not configured — clickhouse_query unavailable for this environment" "$N"
+        return
     fi
-done
+
+    if [ -z "$url" ] || [ -z "$usr" ] || [ -z "$pw" ]; then
+        warn "ClickHouse $label" "partially configured — needs URL, USER and PASSWORD"
+        NOTES+=("ClickHouse $label is half-configured. All three of ${prefix}_URL, ${prefix}_USER and ${prefix}_PASSWORD are required.")
+        return
+    fi
+
+    # Huginn refuses a plaintext URL off-loopback and fails at startup, so
+    # catch it here instead of at first use.
+    case "$url" in
+        https://*) ;;
+        http://localhost*|http://127.0.0.1*|http://[::1]*) ;;
+        http://*)
+            bad "ClickHouse $label" "plaintext URL off loopback — Huginn will refuse to start"
+            MISSING_REQUIRED+=("${prefix}_URL${SEP}must be https:// unless it is loopback${SEP}use the https URL of your ClickHouse Cloud service")
+            return ;;
+        *)
+            warn "ClickHouse $label" "URL has no scheme: $url"
+            NOTES+=("${prefix}_URL should start with https:// (or http:// for a local server).")
+            return ;;
+    esac
+
+    if ! have curl; then
+        ok "ClickHouse $label" "$url ${db:+(database $db)}— not verified, curl is absent"
+        return
+    fi
+
+    # SELECT version() proves the URL, the credentials and the service are all
+    # good in one request, and the answer is worth printing.
+    local body status version
+    body="$(curl -sS -m 10 -w '\n%{http_code}' \
+        -H "X-ClickHouse-User: $usr" -H "X-ClickHouse-Key: $pw" \
+        --data-binary 'SELECT version()' "${url%/}/" 2>/dev/null)"
+    status="$(printf '%s' "$body" | tail -1)"
+    version="$(printf '%s' "$body" | head -1 | tr -d '[:space:]')"
+
+    case "$status" in
+        200) ok "ClickHouse $label" "$url — server $version${db:+, database $db}" ;;
+        401|403)
+            warn "ClickHouse $label" "credentials rejected (HTTP $status)"
+            NOTES+=("ClickHouse $label refused the credentials. Check ${prefix}_USER and ${prefix}_PASSWORD.") ;;
+        000|"")
+            warn "ClickHouse $label" "unreachable at $url"
+            NOTES+=("ClickHouse $label could not be reached. Check the URL, and whether this machine needs a VPN to see it.") ;;
+        *)
+            warn "ClickHouse $label" "unexpected response (HTTP $status)"
+            NOTES+=("ClickHouse $label answered HTTP $status to SELECT version(). The service may be paused or still starting.") ;;
+    esac
+}
+
+# The unsuffixed CLICKHOUSE_* form is treated as dev by the server, so it is
+# accepted here too rather than being reported as missing.
+check_clickhouse_env "dev"  "CLICKHOUSE_DEV"  "CLICKHOUSE_URL" "CLICKHOUSE_USER" "CLICKHOUSE_PASSWORD" "CLICKHOUSE_DATABASE"
+check_clickhouse_env "prod" "CLICKHOUSE_PROD" "" "" "" ""
 
 # Cache directory must be writable, or the disk tier silently degrades.
 CACHE="${CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/go-research-mcp}"
