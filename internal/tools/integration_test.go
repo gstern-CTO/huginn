@@ -21,6 +21,7 @@ import (
 
 	"github.com/gstern-CTO/huginn/internal/config"
 	"github.com/gstern-CTO/huginn/internal/protocol"
+	"github.com/gstern-CTO/huginn/internal/sqlguard"
 )
 
 func newIntegrationServer(t *testing.T) *Server {
@@ -259,4 +260,64 @@ func TestIntegrationDatabricksQuery(t *testing.T) {
 
 	env := callLive(t, srv, "databricks_query", map[string]any{"statement": "SELECT 1 AS probe"})
 	require.NotEqual(t, protocol.StatusError, env.Status, "%+v", env.Error)
+}
+
+// ClickHouse, against a real server. Start one with:
+//
+//	docker compose --profile fixtures up -d clickhouse
+//
+// then export CLICKHOUSE_DEV_URL/_USER/_PASSWORD. Skips when unconfigured.
+func TestIntegrationClickHouseQuery(t *testing.T) {
+	if os.Getenv("CLICKHOUSE_DEV_URL") == "" {
+		t.Skip("CLICKHOUSE_DEV_URL is not set")
+	}
+	cfg, _, err := config.Load("")
+	require.NoError(t, err)
+	cfg.MetricsEnabled = false
+
+	srv, err := NewServer(cfg, discardLogger())
+	require.NoError(t, err)
+	t.Cleanup(srv.Close)
+
+	t.Run("a read query returns typed columns", func(t *testing.T) {
+		env := callLive(t, srv, "clickhouse_query", map[string]any{"statement": "SELECT 1 AS n, 'x' AS s"})
+		require.Equal(t, protocol.StatusHasResults, env.Status, "%+v", env.Error)
+
+		data := env.Data.(map[string]any)
+		cols := data["columns"].([]sqlguard.QueryColumn)
+		require.Equal(t, "n", cols[0].Name)
+		require.NotEmpty(t, cols[0].Type, "the engine's own type must survive")
+	})
+
+	// The server would happily run this under readonly=2; the refusal has to
+	// come from Huginn, before the request is sent (Design Log #5, Q3).
+	t.Run("url() is refused before reaching the server", func(t *testing.T) {
+		env := callLive(t, srv, "clickhouse_query", map[string]any{
+			"statement": `SELECT * FROM url('http://example.invalid/x','CSV','a String')`,
+		})
+		require.Equal(t, protocol.StatusError, env.Status)
+		require.Equal(t, protocol.CodeForbiddenSQL, env.Error.Code)
+		require.Equal(t, "url", env.Error.Details["forbiddenFunction"])
+	})
+
+	// max_result_rows does not bite at small values, so the cap is ours
+	// (Design Log #5, Q4).
+	t.Run("the row cap is enforced client-side", func(t *testing.T) {
+		env := callLive(t, srv, "clickhouse_query", map[string]any{
+			"statement": "SELECT number FROM numbers(5000)", "maxRows": 3,
+		})
+		require.Equal(t, protocol.StatusHasResults, env.Status, "%+v", env.Error)
+
+		data := env.Data.(map[string]any)
+		require.Len(t, data["rows"], 3)
+		require.True(t, data["truncated"].(bool))
+		require.True(t, env.Metadata.HasMore)
+	})
+
+	t.Run("system tables are queryable", func(t *testing.T) {
+		env := callLive(t, srv, "clickhouse_query", map[string]any{
+			"statement": "SELECT name FROM system.tables LIMIT 1",
+		})
+		require.Equal(t, protocol.StatusHasResults, env.Status, "%+v", env.Error)
+	})
 }

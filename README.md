@@ -109,6 +109,7 @@ than being a silent failure at call time.
 | `local_directory_structure` | Walk a directory tree with depth control and pagination. |
 | `lsp_navigate` | `definition`, `references`, `hover`, `documentSymbol` through a real language server, with a ripgrep fallback. |
 | `databricks_query` | Read-only SQL against Databricks. Defaults to dev; production requires `env="prod"`. |
+| `clickhouse_query` | Read-only SQL against ClickHouse Cloud. Also refuses table functions such as `url()` and `file()` that would read outside the database from inside a `SELECT`. Defaults to dev. |
 
 ### Response envelope
 
@@ -165,6 +166,8 @@ Environment variables always win over the JSON config file at
 | `METRICS_PORT` | `9090` | Metrics port, bound to localhost. |
 | `DATABRICKS_DEV_*`, `DATABRICKS_PROD_*` | — | `_HOST`, `_TOKEN`, `_WAREHOUSE_ID` per environment. |
 | `DATABRICKS_MAX_ROWS` | `1000` | Row cap per query. |
+| `CLICKHOUSE_DEV_*`, `CLICKHOUSE_PROD_*` | — | `_URL`, `_USER`, `_PASSWORD`, `_DATABASE` per environment. HTTPS required, except on loopback. |
+| `CLICKHOUSE_MAX_ROWS` | `1000` | Row cap per query, enforced client-side. |
 
 There is deliberately no `ENABLE_CLONE`. The brief lists it as a setting but
 never describes a tool that would use it, and cloning does not fit a read-only

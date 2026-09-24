@@ -7,191 +7,44 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/gstern-CTO/huginn/internal/config"
 	"github.com/gstern-CTO/huginn/internal/content"
 	"github.com/gstern-CTO/huginn/internal/protocol"
+	"github.com/gstern-CTO/huginn/internal/sqlguard"
 )
 
-// forbiddenStatements are the SQL verbs that can modify state. The check runs
-// before the statement leaves this process — it is not delegated to a
-// read-only credential, a warehouse setting, or Databricks itself
-// (WEAKNESSES.md #9).
-var forbiddenStatements = []string{
-	"INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE",
-	"MERGE", "REPLACE", "GRANT", "REVOKE", "REFRESH", "RESTORE", "VACUUM",
-	"OPTIMIZE", "COPY", "UPSERT", "SET", "RESET", "USE", "CALL", "EXECUTE",
-	"ANALYZE", "COMMENT", "MSCK", "CACHE", "UNCACHE", "CLEAR",
+// Databricks SQL. The read-only rules live in internal/sqlguard so that this
+// engine and ClickHouse share one scanner rather than two copies that drift
+// (Design Log #5).
+var dialect = sqlguard.Dialect{
+	Name: "Databricks",
+	AllowedLeading: map[string]bool{
+		"SELECT": true, "WITH": true, "SHOW": true, "DESCRIBE": true, "DESC": true,
+		"EXPLAIN": true, "VALUES": true, "TABLE": true,
+	},
+	Forbidden: []string{
+		"INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE",
+		"MERGE", "REPLACE", "GRANT", "REVOKE", "REFRESH", "RESTORE", "VACUUM",
+		"OPTIMIZE", "COPY", "UPSERT", "SET", "RESET", "USE", "CALL", "EXECUTE",
+		"ANALYZE", "COMMENT", "MSCK", "CACHE", "UNCACHE", "CLEAR",
+	},
+	DocsURL:     protocol.DocsReadOnlySQL,
+	AllowedHint: "Only read queries are permitted. Rewrite this as a SELECT, SHOW, DESCRIBE or EXPLAIN.",
 }
 
-// allowedLeadingKeywords are the verbs a statement may begin with.
-var allowedLeadingKeywords = map[string]bool{
-	"SELECT": true, "WITH": true, "SHOW": true, "DESCRIBE": true, "DESC": true,
-	"EXPLAIN": true, "VALUES": true, "TABLE": true,
-}
-
-var wordRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
-
-// sanitizeSQL removes comments and blanks the contents of string and identifier
-// literals, leaving only the parts of the statement that carry SQL syntax.
-//
-// This has to be one pass rather than two regex passes: a comment marker can
-// appear inside a literal ('--') and a quote can appear inside a comment
-// (-- don't), so stripping either one first corrupts the other. It reports
-// ok=false for an unterminated literal or comment, which is refused rather than
-// guessed at.
-func sanitizeSQL(s string) (string, bool) {
-	var out strings.Builder
-	out.Grow(len(s))
-
-	for i := 0; i < len(s); {
-		if strings.HasPrefix(s[i:], "--") {
-			for i < len(s) && s[i] != '\n' {
-				i++
-			}
-			out.WriteByte(' ')
-			continue
-		}
-		if strings.HasPrefix(s[i:], "/*") {
-			end := strings.Index(s[i+2:], "*/")
-			if end < 0 {
-				return out.String(), false
-			}
-			i += 2 + end + 2
-			out.WriteByte(' ')
-			continue
-		}
-
-		c := s[i]
-		if c != '\'' && c != '"' && c != '`' {
-			out.WriteByte(c)
-			i++
-			continue
-		}
-
-		// A literal: emit the delimiters but none of the content, so a
-		// keyword appearing inside it is correctly treated as data.
-		quote := c
-		out.WriteByte(quote)
-		i++
-		closed := false
-		for i < len(s) {
-			if s[i] == '\\' && quote != '`' && i+1 < len(s) {
-				i += 2 // backslash escape
-				continue
-			}
-			if s[i] == quote {
-				if i+1 < len(s) && s[i+1] == quote {
-					i += 2 // SQL escapes a quote by doubling it
-					continue
-				}
-				closed = true
-				out.WriteByte(quote)
-				i++
-				break
-			}
-			i++
-		}
-		if !closed {
-			return out.String(), false
-		}
-	}
-	return out.String(), true
-}
-
-// ValidateReadOnlySQL rejects anything that is not a read. It returns a
-// structured error naming the offending keyword so the agent can rewrite the
-// query rather than guess why it was refused.
+// ValidateReadOnlySQL rejects anything that is not a single read. Kept as a
+// package function so callers and tests are unaffected by where the rules live.
 func ValidateReadOnlySQL(statement string) *protocol.ToolError {
-	trimmed := strings.TrimSpace(statement)
-	if trimmed == "" {
-		return protocol.ErrInvalidInput("statement must not be empty")
-	}
-
-	// Everything below scans the sanitised form: comments removed and literal
-	// contents blanked, so no keyword can hide inside either.
-	stripped, ok := sanitizeSQL(trimmed)
-	if !ok {
-		return protocol.ErrInvalidInput("statement has an unterminated string literal or block comment")
-	}
-	stripped = strings.TrimSpace(stripped)
-	if stripped == "" || strings.Trim(stripped, "'\"`  \t\n") == "" {
-		return protocol.ErrInvalidInput("statement contains only comments")
-	}
-
-	// Multiple statements are refused outright: allowing them would mean
-	// validating each one and still risking a parser disagreement with
-	// Databricks over where the boundaries are.
-	if hasMultipleStatements(stripped) {
-		return protocol.NewError(protocol.CodeForbiddenSQL, false,
-			"Send exactly one SELECT statement per call.",
-			"multiple SQL statements in one call are not allowed").
-			WithDocs(protocol.DocsReadOnlySQL)
-	}
-
-	upperWords := wordRe.FindAllString(strings.ToUpper(stripped), -1)
-	if len(upperWords) == 0 {
-		return protocol.ErrInvalidInput("statement contains no SQL keywords")
-	}
-
-	// The statement must start with a read verb.
-	if !allowedLeadingKeywords[upperWords[0]] {
-		return protocol.NewError(protocol.CodeForbiddenSQL, false,
-			"Only read queries are permitted. Rewrite this as a SELECT, SHOW, DESCRIBE or EXPLAIN.",
-			"statement begins with %q, which is not a read operation", upperWords[0]).
-			WithDetail("leadingKeyword", upperWords[0]).
-			WithDocs(protocol.DocsReadOnlySQL)
-	}
-
-	// And must not contain a mutating verb anywhere. Word-boundary matching
-	// means a column named `created_at` or `update_time` is unaffected.
-	present := map[string]bool{}
-	for _, w := range upperWords {
-		present[w] = true
-	}
-	for _, verb := range forbiddenStatements {
-		if present[verb] {
-			// CREATE inside EXPLAIN or a CTE name is still refused: the cost
-			// of a false positive is an agent rewriting a query, while the
-			// cost of a false negative is a write against production.
-			return protocol.NewError(protocol.CodeForbiddenSQL, false,
-				fmt.Sprintf("This tool is read-only. Remove %s from the statement; if you need the data it would produce, express it as a SELECT.", verb),
-				"statement contains the forbidden keyword %s", verb).
-				WithDetail("forbiddenKeyword", verb).
-				WithDocs(protocol.DocsReadOnlySQL)
-		}
-	}
-	return nil
+	return dialect.Validate(statement)
 }
 
-// hasMultipleStatements reports whether a semicolon separates two statements,
-// ignoring semicolons inside string literals and a single trailing one.
-func hasMultipleStatements(s string) bool {
-	inSingle, inDouble := false, false
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '\'':
-			if !inDouble {
-				inSingle = !inSingle
-			}
-		case '"':
-			if !inSingle {
-				inDouble = !inDouble
-			}
-		case ';':
-			if inSingle || inDouble {
-				continue
-			}
-			if strings.TrimSpace(s[i+1:]) != "" {
-				return true
-			}
-		}
-	}
-	return false
-}
+// QueryResult and QueryColumn are aliases, not copies: both SQL tools return
+// one shape so the agent learns a single payload.
+type QueryResult = sqlguard.QueryResult
+type QueryColumn = sqlguard.QueryColumn
 
 // ---------------------------------------------------------------------------
 // Client
@@ -210,20 +63,6 @@ func New(cfg *config.Config, logger *slog.Logger) *Client {
 		http:   &http.Client{Timeout: cfg.RequestTimeout},
 		logger: logger,
 	}
-}
-
-// QueryResult is the structured shape returned to the caller: named columns and
-// rows, not a raw API payload.
-type QueryResult struct {
-	Columns   []QueryColumn `json:"columns"`
-	Rows      [][]any       `json:"rows"`
-	RowCount  int           `json:"rowCount"`
-	Truncated bool          `json:"truncated"`
-}
-
-type QueryColumn struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
 }
 
 type statementRequest struct {

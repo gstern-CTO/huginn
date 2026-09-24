@@ -10,6 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/gstern-CTO/huginn/internal/cache"
+	"github.com/gstern-CTO/huginn/internal/clickhouse"
 	"github.com/gstern-CTO/huginn/internal/config"
 	"github.com/gstern-CTO/huginn/internal/databricks"
 	"github.com/gstern-CTO/huginn/internal/ghclient"
@@ -42,6 +43,7 @@ type Server struct {
 	guard *security.PathGuard
 	// gh is nil when no GitHub token was resolved.
 	gh  *ghclient.Client
+	ch  *clickhouse.Client
 	lsp *lsp.Manager
 	dbx *databricks.Client
 }
@@ -83,6 +85,7 @@ func NewServer(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	}
 
 	s.dbx = databricks.New(cfg, logger)
+	s.ch = clickhouse.New(cfg, logger)
 	return s, nil
 }
 
@@ -117,6 +120,7 @@ func (s *Server) tools() []registeredTool {
 		{toolGitHubSearchRepos(), s.handleGitHubSearchRepos},
 		{toolGitHubSearchPullRequests(), s.handleGitHubSearchPullRequests},
 		{toolDatabricksQuery(), s.handleDatabricksQuery},
+		{toolClickHouseQuery(), s.handleClickHouseQuery},
 	}
 	if s.cfg.EnableLocal {
 		tools = append(tools,

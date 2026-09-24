@@ -190,3 +190,27 @@ func Databricks(rowCount int, env string, truncated bool) []string {
 func BudgetExhausted() string {
 	return "The response hit its token budget and was truncated. Paginate, narrow the query, or raise MAX_RESPONSE_TOKENS."
 }
+
+// ClickHouse hints lean on what makes ClickHouse different: system tables for
+// discovery, and the fact that scanning without a partition or time predicate
+// is the usual cause of a slow query.
+func ClickHouse(rowCount int, env string, truncated bool) []string {
+	if rowCount == 0 {
+		return []string{
+			"No rows. Try a longer time range, or confirm the table exists with SHOW TABLES.",
+			"Use system.tables and system.columns to discover what is available without guessing.",
+			fmt.Sprintf("This ran against the %s service; the data you expect may live in the other one.", env),
+		}
+	}
+	out := []string{}
+	if truncated {
+		out = append(out, "The row cap was reached: aggregate in SQL, or page with LIMIT n OFFSET m.")
+	}
+	out = append(out,
+		"Aggregate in ClickHouse rather than post-processing rows — it is far faster and returns fewer tokens.",
+	)
+	if env == "dev" {
+		out = append(out, "This is the dev service. Pass env=prod explicitly if production data is what you need.")
+	}
+	return out
+}

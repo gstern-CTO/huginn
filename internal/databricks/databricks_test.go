@@ -133,27 +133,6 @@ func TestSanitizeSQLHandlesInterleavedQuotesAndComments(t *testing.T) {
 	require.Equal(t, protocol.CodeInvalidInput, tErr.Code)
 }
 
-func TestSanitizeSQLBlanksLiteralContent(t *testing.T) {
-	out, ok := sanitizeSQL(`SELECT * FROM t WHERE x = 'DROP TABLE y'`)
-	require.True(t, ok)
-	require.NotContains(t, out, "DROP")
-	require.Contains(t, out, "SELECT")
-
-	// A doubled quote is an escaped quote, not the end of the literal.
-	out, ok = sanitizeSQL(`SELECT 'it''s fine' FROM t`)
-	require.True(t, ok)
-	require.NotContains(t, out, "fine")
-	require.Contains(t, out, "FROM t")
-}
-
-func TestHasMultipleStatements(t *testing.T) {
-	require.False(t, hasMultipleStatements("SELECT 1"))
-	require.False(t, hasMultipleStatements("SELECT 1;"))
-	require.False(t, hasMultipleStatements("SELECT 1;   "))
-	require.True(t, hasMultipleStatements("SELECT 1; SELECT 2"))
-	require.False(t, hasMultipleStatements("SELECT ';'"))
-}
-
 // Production must never be the default: an agent that omits env gets dev.
 func TestDatabricksEnvironmentDefaultsToDev(t *testing.T) {
 	cfg := config.Defaults()
@@ -163,4 +142,25 @@ func TestDatabricksEnvironmentDefaultsToDev(t *testing.T) {
 	require.True(t, cfg.Databricks["dev"].Configured())
 	require.False(t, cfg.Databricks["prod"].Configured(),
 		"an unconfigured prod environment must not silently resolve")
+}
+
+// A forbidden verb appearing as part of a qualified name is an identifier, not
+// a verb. This was latent here before ClickHouse forced it into the open: a
+// table called catalog.merge_history or a schema named `update` was refused by
+// the rule meant to stop MERGE and UPDATE statements (Design Log #5).
+func TestQualifiedNamesAreNotMistakenForVerbs(t *testing.T) {
+	for _, stmt := range []string{
+		`SELECT * FROM catalog.merge_history`,
+		`SELECT * FROM main.update_log`,
+		`SELECT * FROM prod.delete_audit WHERE ts > now() - INTERVAL 1 DAY`,
+		`SELECT c.set_name FROM main.config AS c`,
+		`SELECT * FROM analytics.cache_stats`,
+	} {
+		require.Nil(t, ValidateReadOnlySQL(stmt), "expected %q to be accepted", stmt)
+	}
+
+	// The actual verbs are still refused.
+	for _, stmt := range []string{`MERGE INTO t USING s ON t.id = s.id`, `UPDATE t SET x = 1`} {
+		require.NotNil(t, ValidateReadOnlySQL(stmt), "expected %q to be refused", stmt)
+	}
 }

@@ -39,6 +39,15 @@ x-huginn-env: &huginn-env
   DATABRICKS_PROD_TOKEN: ${DATABRICKS_PROD_TOKEN:-}
   DATABRICKS_PROD_WAREHOUSE_ID: ${DATABRICKS_PROD_WAREHOUSE_ID:-}
 
+  CLICKHOUSE_DEV_URL: ${CLICKHOUSE_DEV_URL:-}
+  CLICKHOUSE_DEV_USER: ${CLICKHOUSE_DEV_USER:-}
+  CLICKHOUSE_DEV_PASSWORD: ${CLICKHOUSE_DEV_PASSWORD:-}
+  CLICKHOUSE_DEV_DATABASE: ${CLICKHOUSE_DEV_DATABASE:-}
+  CLICKHOUSE_PROD_URL: ${CLICKHOUSE_PROD_URL:-}
+  CLICKHOUSE_PROD_USER: ${CLICKHOUSE_PROD_USER:-}
+  CLICKHOUSE_PROD_PASSWORD: ${CLICKHOUSE_PROD_PASSWORD:-}
+  CLICKHOUSE_PROD_DATABASE: ${CLICKHOUSE_PROD_DATABASE:-}
+
 x-huginn-base: &huginn-base
   build:
     context: .
@@ -112,6 +121,26 @@ services:
       METRICS_ENABLED: "true"
     ports:
       - "127.0.0.1:${METRICS_PORT:-9090}:9090"
+
+  # A throwaway ClickHouse for the integration tests. Not part of running
+  # Huginn; started on demand:
+  #   docker compose --profile fixtures up -d clickhouse
+  clickhouse:
+    profiles: ["fixtures"]
+    image: clickhouse/clickhouse-server:24-alpine
+    environment:
+      CLICKHOUSE_USER: analyst
+      CLICKHOUSE_PASSWORD: fixture-only
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "127.0.0.1:18123:8123"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
 volumes:
   huginn-cache:

@@ -67,6 +67,7 @@ func TestToolRegistrationDependsOnLocalAccess(t *testing.T) {
 	names := toolNames(remoteOnly)
 	require.Contains(t, names, "github_search_code")
 	require.Contains(t, names, "databricks_query")
+	require.Contains(t, names, "clickhouse_query")
 	require.NotContains(t, names, "local_file_content")
 	require.NotContains(t, names, "lsp_navigate")
 
@@ -77,7 +78,7 @@ func TestToolRegistrationDependsOnLocalAccess(t *testing.T) {
 	require.Contains(t, names, "local_find_files")
 	require.Contains(t, names, "local_directory_structure")
 	require.Contains(t, names, "lsp_navigate")
-	require.Len(t, names, 11, "5 GitHub + 4 local + LSP + Databricks")
+	require.Len(t, names, 12, "5 GitHub + 4 local + LSP + Databricks + ClickHouse")
 }
 
 func toolNames(s *Server) []string {
@@ -366,7 +367,7 @@ func TestWrapEmitsValidJSON(t *testing.T) {
 func TestMCPServerAssembles(t *testing.T) {
 	srv, _ := newTestServer(t, true)
 	require.NotNil(t, srv.MCPServer())
-	require.Equal(t, 11, srv.ToolCount())
+	require.Equal(t, 12, srv.ToolCount())
 }
 
 // writeFile is a fixture helper for tests in this package.

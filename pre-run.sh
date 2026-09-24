@@ -248,6 +248,21 @@ for env_name in DEV PROD; do
     fi
 done
 
+# ClickHouse: URL, user and password together, or none.
+for env_name in DEV PROD; do
+    url="CLICKHOUSE_${env_name}_URL"; usr="CLICKHOUSE_${env_name}_USER"; pw="CLICKHOUSE_${env_name}_PASSWORD"
+    if [ -n "${!url:-}" ] || [ -n "${!usr:-}" ] || [ -n "${!pw:-}" ]; then
+        if [ -n "${!url:-}" ] && [ -n "${!usr:-}" ] && [ -n "${!pw:-}" ]; then
+            ok "ClickHouse ${env_name,,}" "${!url}"
+        else
+            warn "ClickHouse ${env_name,,}" "partially configured — needs URL, USER and PASSWORD"
+            NOTES+=("ClickHouse ${env_name,,} is half-configured. All three of $url, $usr and $pw are required.")
+        fi
+    else
+        [ "$QUIET" = 1 ] || printf '  %s-%s %-32s %s%s%s\n' "$DIM" "$N" "ClickHouse ${env_name,,}" "$DIM" "not configured — clickhouse_query unavailable for this environment" "$N"
+    fi
+done
+
 # Cache directory must be writable, or the disk tier silently degrades.
 CACHE="${CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/go-research-mcp}"
 if mkdir -p "$CACHE" 2>/dev/null && [ -w "$CACHE" ]; then

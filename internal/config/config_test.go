@@ -25,6 +25,10 @@ func clearConfigEnv(t *testing.T) {
 		"DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_WAREHOUSE_ID",
 		"DATABRICKS_DEV_HOST", "DATABRICKS_DEV_TOKEN", "DATABRICKS_DEV_WAREHOUSE_ID",
 		"DATABRICKS_PROD_HOST", "DATABRICKS_PROD_TOKEN", "DATABRICKS_PROD_WAREHOUSE_ID",
+		"CLICKHOUSE_URL", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_DATABASE",
+		"CLICKHOUSE_DEV_URL", "CLICKHOUSE_DEV_USER", "CLICKHOUSE_DEV_PASSWORD", "CLICKHOUSE_DEV_DATABASE",
+		"CLICKHOUSE_PROD_URL", "CLICKHOUSE_PROD_USER", "CLICKHOUSE_PROD_PASSWORD", "CLICKHOUSE_PROD_DATABASE",
+		"CLICKHOUSE_MAX_ROWS",
 		"GO_RESEARCH_MCP_CONFIG", "MAX_SUBPROCESS_OUTPUT_BYTES", "LARGE_FILE_BYTES",
 		"FIND_RESULT_LIMIT",
 	} {
@@ -203,4 +207,42 @@ func TestConfigNormalisesAPIURL(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "https://github.example.com/api/v3/", cfg.GitHubAPIURL,
 		"go-github requires a trailing slash on the base URL")
+}
+
+// ClickHouse Cloud is HTTPS, so a plaintext URL is refused — except on
+// loopback, where nothing crosses a network and a local server is the only way
+// to develop or run the fixture (Design Log #5).
+func TestClickHouseURLSchemeRules(t *testing.T) {
+	load := func(url string) error {
+		clearConfigEnv(t)
+		t.Setenv("CLICKHOUSE_DEV_URL", url)
+		t.Setenv("CLICKHOUSE_DEV_USER", "default")
+		t.Setenv("CLICKHOUSE_DEV_PASSWORD", "secret")
+		_, _, err := Load(filepath.Join(t.TempDir(), "absent.json"))
+		return err
+	}
+
+	require.NoError(t, load("https://abc.eu-west-1.aws.clickhouse.cloud:8443"))
+	require.NoError(t, load("http://localhost:8123"), "loopback may use http")
+	require.NoError(t, load("http://127.0.0.1:8123"), "loopback may use http")
+
+	err := load("http://clickhouse.internal:8123")
+	require.Error(t, err, "a remote plaintext URL would send the password in clear")
+	require.Contains(t, err.Error(), "https")
+}
+
+func TestClickHouseEnvironmentsAreSeparate(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("CLICKHOUSE_DEV_URL", "https://dev.clickhouse.cloud:8443")
+	t.Setenv("CLICKHOUSE_DEV_USER", "default")
+	t.Setenv("CLICKHOUSE_DEV_PASSWORD", "d")
+	t.Setenv("CLICKHOUSE_PROD_URL", "https://prod.clickhouse.cloud:8443")
+	t.Setenv("CLICKHOUSE_PROD_USER", "default")
+	t.Setenv("CLICKHOUSE_PROD_PASSWORD", "p")
+
+	cfg, _, err := Load(filepath.Join(t.TempDir(), "absent.json"))
+	require.NoError(t, err)
+	require.True(t, cfg.ClickHouse["dev"].Configured())
+	require.True(t, cfg.ClickHouse["prod"].Configured())
+	require.NotEqual(t, cfg.ClickHouse["dev"].URL, cfg.ClickHouse["prod"].URL)
 }
